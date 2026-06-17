@@ -112,7 +112,16 @@ driver_up() {
 
   local host
   host="$(driver_endpoint)"
-  if ! getent hosts "$host" >/dev/null; then
+  local resolves=0
+  if command -v getent >/dev/null 2>&1; then
+    getent hosts "$host" >/dev/null && resolves=1
+  elif command -v dscacheutil >/dev/null 2>&1; then
+    dscacheutil -q host -a name "$host" | grep -q ip_address && resolves=1
+  else
+    ping -c 1 "$host" >/dev/null 2>&1 && resolves=1
+  fi
+
+  if [ "$resolves" -eq 0 ]; then
     k3d cluster delete "$INSTANCE" || true
     die "'$host' does not resolve - local DNS is blocking sslip.io"
   fi

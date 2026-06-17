@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# muster - wrangle a Rancher management cluster for any E2E framework.
+#
+# Thin dispatcher: parse the subcommand and flags, load config and the selected
+# substrate driver, then route to the core libraries. All real work lives in
+# lib/ (provider-blind) and drivers/ (the 4-verb substrate contract).
+
+MUSTER_VERSION="0.1.0-dev"
+
+# Resolve the install root from this script's location, following symlinks, so
+# muster works whether it is run in-tree, via PATH, or through a symlink.
+_self="${BASH_SOURCE[0]}"
+while [ -L "$_self" ]; do
+  _dir="$(cd -P "$(dirname "$_self")" && pwd)"
+  _self="$(readlink "$_self")"
+  [ "${_self#/}" = "$_self" ] && _self="$_dir/$_self"
+done
+MUSTER_HOME="$(cd -P "$(dirname "$_self")" && pwd)"
+export MUSTER_HOME
+
+# shellcheck source=lib/util.sh
+. "$MUSTER_HOME/lib/util.sh"
+install_err_trap
+
+usage() {
+  cat >&2 <<'USAGE'
+muster - bring up a Rancher management cluster for E2E testing.
+
+Usage:
+  muster <command> [flags]
+
+Commands:
+  up        Create/ensure a cluster and install Rancher, then wait + hand off.
+  wait      Run readiness gates against an existing instance.
+  tunnel    Manage the cloudflared quick tunnel (external mode).
+  warmup    Prime the provisioning controller to avoid the cold-start flake.
+  down      Tear down the cluster and sweep tunnel + substrate state.
+  env       Print the consumer handoff for the current instance.
+  version   Print the muster version.
+  help      Show this help.
+
+Flags:
+  --provider <k3d|existing|docker>  Substrate driver (default: k3d).
+  --instance <name>                 Instance id (default: e2e).
+  --external                        Expose Rancher via a public tunnel.
+  --version <line>                  Rancher line: head|prime|latest|alpha|<pin>
+                                    (default: head).
+  --out <env|cypress|json>          Handoff format (default: env).
+  --config <path>                   Config file to source (default: ./config.sh).
+  -h, --help                        Show this help.
+
+Examples:
+  muster up --provider k3d
+  muster up --provider k3d --external --version head
+  muster up --provider existing --out cypress
+  muster down
+USAGE
+}
+
+# Defaults; overridable by config file then flags.
+PROVIDER="k3d"
+INSTANCE="e2e"
+EXTERNAL="false"
+RANCHER_LINE="head"
+OUT="env"
+CONFIG=""
+
+CMD="${1:-help}"
+[ $# -gt 0 ] && shift || true
+
+# A config file may pre-seed the defaults above before flags override them.
+# Honour an explicit --config anywhere on the line by pre-scanning for it.
+_args=("$@")
+for ((i = 0; i < ${#_args[@]}; i++)); do
+  if [ "${_args[i]}" = "--config" ]; then
+    CONFIG="${_args[i + 1]:-}"
+    break
+  fi
+done
+[ -z "$CONFIG" ] && [ -r "./config.sh" ] && CONFIG="./config.sh"
+if [ -n "$CONFIG" ]; then
+  [ -r "$CONFIG" ] || die "config file not readable: $CONFIG"
+  # shellcheck source=/dev/null
+  . "$CONFIG"
+fi
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --provider)
+      PROVIDER="${2:?--provider needs a value}"
+      shift 2
+      ;;
+    --instance)
+      INSTANCE="${2:?--instance needs a value}"
+      shift 2
+      ;;
+    --external)
+      EXTERNAL="true"
+      shift
+      ;;
+    --version)
+      RANCHER_LINE="${2:?--version needs a value}"
+      shift 2
+      ;;
+    --out)
+      OUT="${2:?--out needs a value}"
+      shift 2
+      ;;
+    --config)
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*) die "unknown flag: $1 (try 'muster help')" ;;
+    *) die "unexpected argument: $1 (try 'muster help')" ;;
+  esac
+done
+
+case "$PROVIDER" in
+  k3d | existing | docker) ;;
+  *) die "unknown provider: $PROVIDER (k3d|existing|docker)" ;;
+esac
+case "$OUT" in
+  env | cypress | json) ;;
+  *) die "unknown --out: $OUT (env|cypress|json)" ;;
+esac
+
+export INSTANCE EXTERNAL RANCHER_LINE OUT
+
+load_core() {
+  # shellcheck source=lib/helm.sh
+  . "$MUSTER_HOME/lib/helm.sh"
+  # shellcheck source=lib/gates.sh
+  . "$MUSTER_HOME/lib/gates.sh"
+  # shellcheck source=lib/tunnel.sh
+  . "$MUSTER_HOME/lib/tunnel.sh"
+  # shellcheck source=lib/external.sh
+  . "$MUSTER_HOME/lib/external.sh"
+  # shellcheck source=lib/warmup.sh
+  . "$MUSTER_HOME/lib/warmup.sh"
+  # shellcheck source=lib/handoff.sh
+  . "$MUSTER_HOME/lib/handoff.sh"
+  # shellcheck source=/dev/null
+  . "$MUSTER_HOME/drivers/${PROVIDER}.sh"
+}
+
+# High-level command flows are assembled in Phase 1+ as the libs land.
+cmd_up() { die "up: not implemented (Phase 1)"; }
+cmd_wait() { die "wait: not implemented (Phase 1)"; }
+cmd_tunnel() { die "tunnel: not implemented (Phase 3)"; }
+cmd_warmup() { die "warmup: not implemented (Phase 3)"; }
+cmd_down() { die "down: not implemented (Phase 1)"; }
+
+case "$CMD" in
+  version)
+    echo "muster $MUSTER_VERSION"
+    ;;
+  help | -h | --help)
+    usage
+    ;;
+  up)
+    load_core
+    cmd_up
+    ;;
+  wait)
+    load_core
+    cmd_wait
+    ;;
+  tunnel)
+    load_core
+    cmd_tunnel
+    ;;
+  warmup)
+    load_core
+    cmd_warmup
+    ;;
+  down)
+    load_core
+    cmd_down
+    ;;
+  env)
+    load_core
+    handoff_write "$OUT"
+    ;;
+  *)
+    log_err "unknown command: $CMD"
+    usage
+    exit 2
+    ;;
+esac

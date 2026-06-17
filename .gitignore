@@ -1,0 +1,15 @@
+# Local config and handoff artifacts
+config.sh
+*.env
+*.kubeconfig
+
+# Runtime state (tunnel pids/logs, cached binaries)
+.muster/
+/tmp-*
+
+# Editor / OS noise
+*.swp
+.DS_Store
+
+# bats helper libraries vendored at test time
+test/bats-*/

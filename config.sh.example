@@ -1,0 +1,50 @@
+# muster config (copy to config.sh and edit). Sourced by the `muster`
+# entrypoint before flags, so any flag overrides the value set here. This is
+# plain bash: every line is `KEY=value`. Do not commit config.sh (gitignored).
+
+# --- substrate ---------------------------------------------------------------
+# PROVIDER: k3d | existing | docker (docker deferred). --provider overrides.
+PROVIDER="k3d"
+
+# INSTANCE: logical name; drives kubeconfig/handoff/port offsets. --instance.
+INSTANCE="e2e"
+
+# --- Rancher version matrix --------------------------------------------------
+# RANCHER_LINE selects the chart line, resolved to a concrete chart + image in
+# Phase 1 (ported from the ansible resolve-helm-version task):
+#   head      newest devel chart on the optimus head line
+#   prime     SUSE Rancher Prime registry
+#   latest    releases.rancher.com latest
+#   alpha     alpha channel
+#   <pin>     an explicit chart/image version (e.g. 2.10.1)
+RANCHER_LINE="head"
+
+# RANCHER_IMAGE_TAG: override the resolved image tag (default: resolved/head).
+RANCHER_IMAGE_TAG="head"
+
+# RANCHER_PASSWORD: bootstrap password handed to the framework's setup spec.
+# muster does NOT perform first-login; the consumer owns that.
+RANCHER_PASSWORD="password1234"
+
+# CERT_MANAGER_VERSION: cert-manager chart version (upstream parity).
+CERT_MANAGER_VERSION="v1.7.1"
+
+# K3S_IMAGE: k3d node image (k3d provider only).
+K3S_IMAGE="rancher/k3s:v1.33.1-k3s1"
+
+# --- external access (optional) ----------------------------------------------
+# EXTERNAL=true exposes Rancher through a cloudflared quick tunnel so an
+# out-of-cluster node can register (provisioning tests). --external overrides.
+EXTERNAL="false"
+
+# EXTERNAL_HOSTNAME: bring-your-own public host; skips the auto quick tunnel.
+EXTERNAL_HOSTNAME=""
+
+# --- existing provider -------------------------------------------------------
+# Required when PROVIDER=existing: the caller's cluster + Rancher host.
+# KUBECONFIG=""
+# RANCHER_HOST=""
+
+# --- handoff -----------------------------------------------------------------
+# OUT: env | cypress | json. The format written for the consuming framework.
+OUT="env"

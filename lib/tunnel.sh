@@ -7,8 +7,18 @@
 _MUSTER_TUNNEL_SH=1
 
 CLOUDFLARED_VERSION="${CLOUDFLARED_VERSION:-2026.6.0}"
-CLOUDFLARED_SHA256_amd64="08d27c4c5d3ed73ee3e98ef2ddceb4ad09fd4cfc28e243565a189538e8ccd706"
-CLOUDFLARED_SHA256_arm64="8482ebf1e74a2a4a1a9f1e090e17e3de08423f94100ece6789287cb26fb9480f"
+CLOUDFLARED_SHA256_linux_amd64="08d27c4c5d3ed73ee3e98ef2ddceb4ad09fd4cfc28e243565a189538e8ccd706"
+CLOUDFLARED_SHA256_linux_arm64="8482ebf1e74a2a4a1a9f1e090e17e3de08423f94100ece6789287cb26fb9480f"
+CLOUDFLARED_SHA256_darwin_amd64="2d620f9e7b2ddf5e6f5fe1ed4eee308d8dc4c338bc936bfb18e0022a344daa66"
+CLOUDFLARED_SHA256_darwin_arm64="1b66920a280235b0180e935c6fb2adcf91fceeeaf66c4365e606bd37d6c587ef"
+
+_muster_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
 
 # ensure_cloudflared - print a verified cloudflared path, downloading if needed.
 ensure_cloudflared() {
@@ -17,33 +27,38 @@ ensure_cloudflared() {
     return 0
   fi
 
-  local arch want
+  local arch os want url is_tgz=0
   case "$(uname -m)" in
-    x86_64)
-      arch=amd64
-      want="$CLOUDFLARED_SHA256_amd64"
+    x86_64) arch=amd64 ;;
+    aarch64 | arm64) arch=arm64 ;;
+    *) log_err "unsupported arch '$(uname -m)' for cloudflared bootstrap"; return 1 ;;
+  esac
+
+  case "$(uname -s)" in
+    Linux)
+      os=linux
+      want="$(eval echo \"\$CLOUDFLARED_SHA256_linux_${arch}\")"
+      url="https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-${arch}"
       ;;
-    aarch64 | arm64)
-      arch=arm64
-      want="$CLOUDFLARED_SHA256_arm64"
+    Darwin)
+      os=darwin
+      want="$(eval echo \"\$CLOUDFLARED_SHA256_darwin_${arch}\")"
+      url="https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-darwin-${arch}.tgz"
+      is_tgz=1
       ;;
-    *)
-      log_err "unsupported arch '$(uname -m)' for cloudflared bootstrap"
-      return 1
-      ;;
+    *) log_err "unsupported OS '$(uname -s)' for cloudflared bootstrap"; return 1 ;;
   esac
 
   local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/muster"
-  local bin="${cache_dir}/cloudflared-${CLOUDFLARED_VERSION}-${arch}"
+  local bin="${cache_dir}/cloudflared-${CLOUDFLARED_VERSION}-${os}-${arch}"
   mkdir -p "$cache_dir"
 
-  if [ -x "$bin" ] && [ "$(sha256sum "$bin" | awk '{print $1}')" = "$want" ]; then
+  if [ -x "$bin" ] && [ "$(_muster_sha256 "$bin")" = "$want" ]; then
     echo "$bin"
     return 0
   fi
 
-  local url="https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-${arch}"
-  log_info "cloudflared: downloading pinned ${CLOUDFLARED_VERSION} (${arch})"
+  log_info "cloudflared: downloading pinned ${CLOUDFLARED_VERSION} (${os}-${arch})"
   local tmp="${bin}.tmp.$$"
   local curl_args=(-fsSL -o "$tmp")
   local ca
@@ -55,11 +70,23 @@ ensure_cloudflared() {
     return 1
   fi
 
+  if [ "$is_tgz" -eq 1 ]; then
+    local tgz_tmp="${tmp}.tgz"
+    mv "$tmp" "$tgz_tmp"
+    if ! tar -xzf "$tgz_tmp" -C "$cache_dir" cloudflared; then
+      rm -f "$tgz_tmp"
+      log_err "cloudflared extract failed"
+      return 1
+    fi
+    rm -f "$tgz_tmp"
+    mv "${cache_dir}/cloudflared" "$tmp"
+  fi
+
   local got
-  got="$(sha256sum "$tmp" | awk '{print $1}')"
+  got="$(_muster_sha256 "$tmp")"
   if [ "$got" != "$want" ]; then
     rm -f "$tmp"
-    log_err "cloudflared checksum mismatch (${arch})"
+    log_err "cloudflared checksum mismatch (${os}-${arch})"
     log_err "  expected: $want"
     log_err "  got:      $got"
     return 1

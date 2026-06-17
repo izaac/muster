@@ -64,6 +64,10 @@ driver_up() {
     -p "$(k3d_http_port):80@loadbalancer"
     --wait --timeout 180s
   )
+  if [ -n "${DASHBOARD_DIST:-}" ]; then
+    [ -d "$DASHBOARD_DIST" ] || die "--dashboard-dist '$DASHBOARD_DIST' is not a directory"
+    create_args+=(-v "${DASHBOARD_DIST}:/dashboard-dist@server:0")
+  fi
 
   log_info "k3d: creating cluster $INSTANCE"
   k3d "${create_args[@]}"

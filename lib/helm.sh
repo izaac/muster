@@ -196,5 +196,22 @@ helm_install_rancher() {
     --set "extraEnv[0].name=CATTLE_AGENT_IMAGE"
     --set-string "extraEnv[0].value=${agent_image}:${tag}"
   )
+  if [ -n "${DASHBOARD_DIST:-}" ]; then
+    args+=(
+      --set "extraEnv[1].name=CATTLE_UI_OFFLINE_PREFERRED"
+      --set-string "extraEnv[1].value=true"
+    )
+  fi
   helm --kubeconfig "$kc" "${args[@]}"
+
+  if [ -n "${DASHBOARD_DIST:-}" ]; then
+    log_info "hostPath-mounting dashboard dist over the pod UI"
+    kubectl --kubeconfig "$kc" -n cattle-system patch deploy rancher \
+      --type=strategic -p '{
+      "spec": {"template": {"spec": {
+        "volumes": [{"name": "dashboard-dist", "hostPath": {"path": "/dashboard-dist", "type": "Directory"}}],
+        "containers": [{"name": "rancher", "volumeMounts": [{"name": "dashboard-dist", "mountPath": "/usr/share/rancher/ui-dashboard/dashboard"}]}]
+      }}}
+    }'
+  fi
 }

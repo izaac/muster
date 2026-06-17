@@ -13,14 +13,16 @@ INSTANCE="e2e"
 # Two axes, ported from the ansible resolve-helm-version task:
 #
 # RANCHER_REPO selects the release channel (chart URL + image registry):
-#   rancher-latest    optimus RC staging (stgregistry image)   [default]
+# RANCHER_REPO selects the release channel (chart URL + image registry):
+#   rancher-com-rc    Docker Hub RC (head -> master image)       [default]
+#   rancher-latest    optimus RC staging (stgregistry image)
 #   rancher-alpha     optimus alpha staging (stgregistry image)
 #   rancher-prime     SUSE prime registry; GATED, needs pull creds set up
 #   rancher-community Docker Hub stable
-#   rancher-com-rc    Docker Hub RC
 #   rancher-com-alpha Docker Hub alpha
-# The alpha/rc staging channels are the intended happy path; prime is opt-in.
-RANCHER_REPO="rancher-latest"
+# Community Docker Hub is the default (no creds, real moving master via head);
+# the optimus alpha/rc staging channels and prime are opt-in.
+RANCHER_REPO="rancher-com-rc"
 
 # RANCHER_IMAGE_TAG: "head" (newest devel chart in the channel) or a version
 # pin like 2.13 / 2.13.4 / 2.13.4-rc1. For staging channels the resolved chart

@@ -19,7 +19,7 @@ field() {
   [ "$(field provider "$output")" = "k3d" ]
   [ "$(field instance "$output")" = "e2e" ]
   [ "$(field external "$output")" = "false" ]
-  [ "$(field repo "$output")" = "rancher-latest" ]
+  [ "$(field repo "$output")" = "rancher-com-rc" ]
   [ "$(field version "$output")" = "head" ]
   [ "$(field out "$output")" = "env" ]
   [ "$(field config "$output")" = "<none>" ]

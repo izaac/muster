@@ -31,6 +31,7 @@ Usage:
 
 Commands:
   up        Create/ensure a cluster and install Rancher, then wait + hand off.
+  build-ui  Build a dashboard UI dist from the branch matching --version.
   wait      Run readiness gates against an existing instance.
   tunnel    Manage the cloudflared quick tunnel (external mode).
   warmup    Prime the provisioning controller to avoid the cold-start flake.
@@ -44,17 +45,22 @@ Flags:
   --provider <k3d|existing|docker>  Substrate driver (default: k3d).
   --instance <name>                 Instance id (default: e2e).
   --external                        Expose Rancher via a public tunnel.
-  --repo <channel>                  Rancher channel (default: rancher-latest):
+  --repo <channel>                  Rancher channel (default: rancher-com-rc):
                                     rancher-prime|rancher-latest|rancher-alpha|
                                     rancher-community|rancher-com-rc|rancher-com-alpha.
   --version <tag>                   Image tag: head or a version like 2.13 /
                                     2.13.4-rc1 (default: head).
   --out <env|cypress|json>          Handoff format (default: env).
+  --dashboard-src <path>            rancher/dashboard checkout to build (build-ui).
+  --dashboard-dist <path>           Prebuilt UI dist to mount over the pod UI (up),
+                                    or where build-ui writes (default: <src>/dist).
   --config <path>                   Config file to source (default: ./config.sh).
   -h, --help                        Show this help.
 
 Examples:
   muster up --provider k3d
+  muster build-ui --dashboard-src ~/repos/dashboard --version head
+  muster up --provider k3d --dashboard-dist ~/repos/dashboard/dist
   muster up --provider k3d --external --repo rancher-alpha --version head
   muster up --provider existing --out cypress
   muster down
@@ -65,10 +71,12 @@ USAGE
 PROVIDER="k3d"
 INSTANCE="e2e"
 EXTERNAL="false"
-RANCHER_REPO="rancher-latest"
+RANCHER_REPO="rancher-com-rc"
 RANCHER_IMAGE_TAG="head"
 RANCHER_PASSWORD="${RANCHER_PASSWORD:-password1234}"
 OUT="env"
+DASHBOARD_SRC="${DASHBOARD_SRC:-}"
+DASHBOARD_DIST="${DASHBOARD_DIST:-}"
 CONFIG=""
 
 CMD="${1:-help}"
@@ -116,6 +124,14 @@ while [ $# -gt 0 ]; do
       OUT="${2:?--out needs a value}"
       shift 2
       ;;
+    --dashboard-src)
+      DASHBOARD_SRC="${2:?--dashboard-src needs a value}"
+      shift 2
+      ;;
+    --dashboard-dist)
+      DASHBOARD_DIST="${2:?--dashboard-dist needs a value}"
+      shift 2
+      ;;
     --config)
       shift 2
       ;;
@@ -146,6 +162,7 @@ case "$RANCHER_REPO" in
 esac
 
 export INSTANCE EXTERNAL RANCHER_REPO RANCHER_IMAGE_TAG OUT RANCHER_PASSWORD
+export DASHBOARD_SRC DASHBOARD_DIST
 
 load_core() {
   # shellcheck source=lib/download.sh
@@ -162,6 +179,8 @@ load_core() {
   . "$MUSTER_HOME/lib/warmup.sh"
   # shellcheck source=lib/handoff.sh
   . "$MUSTER_HOME/lib/handoff.sh"
+  # shellcheck source=lib/buildui.sh
+  . "$MUSTER_HOME/lib/buildui.sh"
   # shellcheck source=/dev/null
   . "$MUSTER_HOME/drivers/${PROVIDER}.sh"
 }
@@ -175,6 +194,9 @@ cmd_up() {
   local kc host
   kc="$(driver_kubeconfig)"
   host="$(driver_endpoint)"
+
+  [ -n "${DASHBOARD_DIST:-}" ] \
+    && log_info "mounting prebuilt UI dist over the pod: $DASHBOARD_DIST"
 
   helm_resolve_version
   helm_install_rancher "$kc" "$host"
@@ -194,6 +216,7 @@ cmd_wait() {
 cmd_tunnel() { die "tunnel: not implemented (Phase 3)"; }
 cmd_warmup() { die "warmup: not implemented (Phase 3)"; }
 cmd_down() { driver_down; }
+cmd_build_ui() { buildui_run; }
 
 case "$CMD" in
   version)
@@ -207,6 +230,8 @@ external=$EXTERNAL
 repo=$RANCHER_REPO
 version=$RANCHER_IMAGE_TAG
 out=$OUT
+dashboard_src=${DASHBOARD_SRC:-<none>}
+dashboard_dist=${DASHBOARD_DIST:-<none>}
 config=${CONFIG:-<none>}
 EOF
     ;;
@@ -216,6 +241,10 @@ EOF
   up)
     load_core
     cmd_up
+    ;;
+  build-ui)
+    load_core
+    cmd_build_ui
     ;;
   wait)
     load_core

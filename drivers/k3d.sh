@@ -27,8 +27,24 @@ k3d_network() { echo "k3d-${INSTANCE}"; }
 k3d_https_port() { echo $(($(k3d_index) + 8443)); }
 k3d_http_port() { echo $(($(k3d_index) + 8080)); }
 
+# in_container - true when muster itself runs inside a container. Containerised
+# runs drive the host Docker daemon and create sibling k3d containers, so the
+# cluster's API and ingress are reached differently than from a host shell.
+in_container() { [ -f /.dockerenv ]; }
+
 driver_kubeconfig() {
-  k3d kubeconfig write "$INSTANCE" 2>/dev/null
+  local kc
+  kc="$(k3d kubeconfig write "$INSTANCE" 2>/dev/null)"
+  # Inside a container the kubeconfig's 0.0.0.0/127.0.0.1 server address points
+  # at the container itself. Rewrite it to the host gateway so kubectl reaches
+  # the API published on the host (the matching TLS SAN is added at create time).
+  if in_container; then
+    sed -i \
+      -e 's#https://0\.0\.0\.0:#https://host.docker.internal:#' \
+      -e 's#https://127\.0\.0\.1:#https://host.docker.internal:#' \
+      "$kc"
+  fi
+  printf '%s' "$kc"
 }
 
 # k3d_kc <kubectl args...> - run kubectl against this instance's kubeconfig.
@@ -43,12 +59,20 @@ k3d_lb_ip() {
 }
 
 driver_endpoint() {
-  printf '%s.sslip.io' "$(k3d_lb_ip)"
+  if [ -n "${EXTERNAL_HOSTNAME:-}" ]; then
+    printf '%s' "$EXTERNAL_HOSTNAME"
+  else
+    printf '%s.sslip.io' "$(k3d_lb_ip)"
+  fi
+}
+
+driver_tunnel_port() {
+  k3d_https_port
 }
 
 driver_up() {
-  require_cmd k3d "enter the devenv shell"
-  require_cmd helm "enter the devenv shell"
+  require_cmd k3d "run muster via its container image, or install k3d"
+  require_cmd helm "run muster via its container image, or install helm"
 
   if k3d cluster list 2>/dev/null | awk '{print $1}' | grep -qx "$INSTANCE"; then
     log_info "k3d cluster '$INSTANCE' already exists, reusing it"
@@ -64,6 +88,13 @@ driver_up() {
     -p "$(k3d_http_port):80@loadbalancer"
     --wait --timeout 180s
   )
+  # Containerised muster reaches the API through the host gateway. k3d keeps its
+  # default API bind (binding to host.docker.internal is not possible on Docker
+  # Desktop), but we add host.docker.internal as a TLS SAN so the kubeconfig can
+  # be rewritten to that address (see driver_kubeconfig) with a valid cert.
+  if in_container; then
+    create_args+=(--k3s-arg "--tls-san=host.docker.internal@server:*")
+  fi
   if [ -n "${DASHBOARD_DIST:-}" ]; then
     [ -d "$DASHBOARD_DIST" ] || die "--dashboard-dist '$DASHBOARD_DIST' is not a directory"
     create_args+=(-v "${DASHBOARD_DIST}:/dashboard-dist@server:0")
@@ -72,9 +103,25 @@ driver_up() {
   log_info "k3d: creating cluster $INSTANCE"
   k3d "${create_args[@]}"
 
+  # Join the cluster network so the gates can reach the serverlb at its bridge IP
+  # (<ip>.sslip.io). On Docker Desktop the bridge lives inside the VM and is not
+  # routable from the host, so the muster container must be on the network itself.
+  if in_container; then
+    docker network connect "$(k3d_network)" "$(cat /etc/hostname)" 2>/dev/null || true
+  fi
+
   local host
   host="$(driver_endpoint)"
-  if ! getent hosts "$host" >/dev/null; then
+  local resolves=0
+  if command -v getent >/dev/null 2>&1; then
+    getent hosts "$host" >/dev/null && resolves=1
+  elif command -v dscacheutil >/dev/null 2>&1; then
+    dscacheutil -q host -a name "$host" | grep -q ip_address && resolves=1
+  else
+    ping -c 1 "$host" >/dev/null 2>&1 && resolves=1
+  fi
+
+  if [ "$resolves" -eq 0 ]; then
     k3d cluster delete "$INSTANCE" || true
     die "'$host' does not resolve - local DNS is blocking sslip.io"
   fi

@@ -45,11 +45,38 @@ setup() {
   [ "$status" -ne 0 ]
 }
 
-@test "cypress and json adapters are deferred to Phase 2, not silently empty" {
+@test "cypress handoff emits the upstream base-config env contract" {
   run handoff_write cypress
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"TEST_BASE_URL=https://10.0.0.5.sslip.io/dashboard"* ]]
+  [[ "$output" == *"TEST_USERNAME=admin"* ]]
+  [[ "$output" == *"CATTLE_BOOTSTRAP_PASSWORD=s3cret"* ]]
+  [[ "$output" == *"TEST_PASSWORD=s3cret"* ]]
+  [[ "$output" == *"API=https://10.0.0.5.sslip.io"* ]]
+}
+
+@test "cypress handoff honours an overridden username" {
+  export MUSTER_USERNAME="operator"
+  run handoff_write cypress
+  [[ "$output" == *"TEST_USERNAME=operator"* ]]
+}
+
+@test "json handoff emits a single object with the cluster facts" {
   run handoff_write json
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "{" ]
+  [ "${lines[${#lines[@]}-1]}" = "}" ]
+  [[ "$output" == *'"baseUrl": "https://10.0.0.5.sslip.io/dashboard"'* ]]
+  [[ "$output" == *'"api": "https://10.0.0.5.sslip.io"'* ]]
+  [[ "$output" == *'"kubeconfig": "/tmp/kc.yaml"'* ]]
+  [[ "$output" == *'"password": "s3cret"'* ]]
+}
+
+@test "json handoff escapes a backslash and a double quote in a value" {
+  export MUSTER_PASSWORD='a"b\c'
+  run handoff_write json
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"password": "a\"b\\c"'* ]]
 }
 
 @test "an unknown format is rejected" {

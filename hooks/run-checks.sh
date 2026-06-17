@@ -10,7 +10,7 @@ cd "$repo_root"
 # shell profile (CI installs them on PATH; local dev often vendors them here).
 export PATH="$HOME/.local/bin:$HOME/.local/bats-core/bin:$PATH"
 
-scripts=(muster lib/*.sh drivers/*.sh hooks/*.sh hooks/pre-commit hooks/pre-push)
+scripts=(muster lib/*.sh drivers/*.sh docker/*.sh hooks/*.sh hooks/pre-commit hooks/pre-push)
 
 missing=0
 need() {
@@ -31,7 +31,7 @@ echo "hook: shellcheck"
 shellcheck -x -s bash "${scripts[@]}"
 
 echo "hook: shfmt"
-shfmt -d -i 2 -ci -bn muster lib drivers hooks
+shfmt -d -i 2 -ci -bn muster lib drivers docker/*.sh hooks
 
 echo "hook: bats"
 bats test/

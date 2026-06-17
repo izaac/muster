@@ -194,8 +194,11 @@ load_core() {
 
 # High-level command flows are assembled in Phase 1+ as the libs land.
 cmd_up() {
-  is_true "$EXTERNAL" \
-    && die "external mode is not implemented yet (Phase 3); run without --external"
+  local tunnel_url=""
+  if is_true "${EXTERNAL:-}"; then
+    tunnel_url="$(tunnel_up)"
+    export EXTERNAL_HOSTNAME="${tunnel_url#https://}"
+  fi
 
   driver_up
   local kc host
@@ -220,9 +223,16 @@ cmd_wait() {
   export MUSTER_HOSTNAME="$host" MUSTER_KUBECONFIG="$kc" MUSTER_PASSWORD="$RANCHER_PASSWORD"
   handoff_write "$OUT"
 }
-cmd_tunnel() { die "tunnel: not implemented (Phase 3)"; }
-cmd_warmup() { die "warmup: not implemented (Phase 3)"; }
-cmd_down() { driver_down; }
+cmd_tunnel() { tunnel_up; }
+cmd_warmup() {
+  local kc
+  kc="$(driver_kubeconfig)"
+  warmup_provisioning "$kc"
+}
+cmd_down() {
+  tunnel_down
+  driver_down
+}
 cmd_build_ui() { buildui_run; }
 
 case "$CMD" in
@@ -272,6 +282,14 @@ EOF
     ;;
   env)
     load_core
+    . "$MUSTER_HOME/lib/tunnel.sh"
+    if is_true "${EXTERNAL:-}"; then
+      t_url="$(tunnel_url)"
+      [ -n "$t_url" ] && export EXTERNAL_HOSTNAME="${t_url#https://}"
+    fi
+    kc="$(driver_kubeconfig)"
+    host="$(driver_endpoint)"
+    export MUSTER_HOSTNAME="$host" MUSTER_KUBECONFIG="$kc" MUSTER_PASSWORD="$RANCHER_PASSWORD"
     handoff_write "$OUT"
     ;;
   *)

@@ -1,0 +1,12 @@
+# Keep the build context tiny and free of host state.
+.git
+.github
+test
+hooks
+**/*.md
+blob-report
+playwright-report
+test-results
+node_modules
+*.log
+config.sh

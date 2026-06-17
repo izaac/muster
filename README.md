@@ -43,6 +43,56 @@ muster down                                   # tear down + sweep state
 
 Copy `config.sh.example` to `config.sh` to set defaults; any flag overrides it.
 
+## Providers
+
+muster ships two working substrate drivers behind the same four-verb contract
+(`driver_up`, `driver_down`, `driver_kubeconfig`, `driver_endpoint`). A driver
+may declare optional hooks so a self-contained substrate opts out of the
+core's helm path cleanly.
+
+### k3d
+
+The strategic substrate. Provisions a k3s cluster in docker, installs
+cert-manager and the Rancher helm chart, then runs kubectl-based readiness
+gates (deployment rollout, webhook pod, capi service). Needs `k3d`, `helm`,
+and `kubectl`. Use this when you want the real post-install Rancher form,
+matching upstream e2e-k3s-start values.
+
+### docker
+
+Runs `rancher/rancher` as a single privileged container, the pre-k3d install
+form. No k8s cluster, no helm chart, no cert-manager. The container IS
+Rancher. The driver declares three optional hooks so the provider-blind core
+skips helm cleanly: `driver_installs_rancher` makes `cmd_up` skip the chart
+install, `driver_gate` runs HTTP-only readiness (dashboard 200 and auth API
+200, no kubectl), and `driver_resolve_image` resolves the image tag from the
+same channel map as k3d.
+
+Community channels (`rancher-com-rc`, `rancher-community`, `rancher-com-alpha`)
+are fully helm-free: the literal tag goes straight to `docker run`, so
+`rancher/rancher:head` works with just docker installed. Staging and prime
+channels (`rancher-latest`, `rancher-alpha`, `rancher-prime`) still need helm
+to resolve `v<chart_version>` for the image tag, but never for an install.
+
+`driver_kubeconfig` prints empty since standalone Rancher exposes no consumer
+kubeconfig. The handoff omits `KUBECONFIG` accordingly; the e2e framework
+only needs `TEST_BASE_URL` and the bootstrap password.
+
+### Sharding
+
+Both providers offset host ports by instance index so sharded runs do not
+collide: `e2e` maps to 8443, `e2e-1` to 8444, `e2e-2` to 8445. Use
+`--instance e2e-<n>` for parallel runs. Note that k3d and docker share the
+same offset scheme, so the default instance of both cannot run simultaneously.
+
+### External mode
+
+Both providers support `--external`, which starts a pinned, checksum-verified
+cloudflared quick tunnel to the local Rancher and exports the public
+`*.trycloudflare.com` URL as `EXTERNAL_HOSTNAME`. The handoff then emits the
+tunnel URL as `TEST_BASE_URL` so an out-of-cluster node can register. This is
+the path for provisioning tests that need a publicly reachable Rancher.
+
 ## Requirements
 
 `bash` 4+, `kubectl`, `helm`, and (for the k3d provider) `k3d`. The docker

@@ -3,7 +3,10 @@
 # plain bash: every line is `KEY=value`. Do not commit config.sh (gitignored).
 
 # --- substrate ---------------------------------------------------------------
-# PROVIDER: k3d | existing | docker (docker deferred). --provider overrides.
+# PROVIDER: k3d | docker | existing (existing deferred). --provider overrides.
+#   k3d    helm chart on k3s-in-docker (full cluster; needs k3d + helm)
+#   docker standalone rancher/rancher container (no helm/k8s for community
+#          channels; staging/prime still need helm to resolve the image tag)
 PROVIDER="k3d"
 
 # INSTANCE: logical name; drives kubeconfig/handoff/port offsets. --instance.

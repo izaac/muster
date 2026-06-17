@@ -46,19 +46,23 @@ setup() {
   [[ "$output" == *"unknown --out"* ]]
 }
 
-@test "docker driver is an honest stub" {
+@test "docker driver loads and declares the self-contained hooks" {
   run bash -c '
     . "'"$BATS_TEST_DIRNAME"'/../lib/util.sh"
+    . "'"$BATS_TEST_DIRNAME"'/../lib/helm.sh"
     . "'"$BATS_TEST_DIRNAME"'/../drivers/docker.sh"
-    driver_up
+    declare -F driver_installs_rancher >/dev/null && driver_installs_rancher
   '
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"docker driver is not implemented"* ]]
+  [ "$status" -eq 0 ]
 }
 
 
-@test "up on the docker provider is an honest stub" {
+@test "up on the docker provider reaches the driver (not the old stub)" {
+  # `muster up --provider docker` invokes docker for real; skip where docker is
+  # installed so the unit suite never starts a real container. Asserts only
+  # that the old honest-stub message is gone and the dispatcher proceeds.
+  command -v docker >/dev/null && skip "docker present; would start a real container"
   run "$MUSTER" up --provider docker
   [ "$status" -ne 0 ]
-  [[ "$output" == *"docker driver is not implemented"* ]]
+  [[ "$output" != *"docker driver is not implemented"* ]]
 }

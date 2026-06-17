@@ -205,11 +205,18 @@ cmd_up() {
   kc="$(driver_kubeconfig)"
   host="$(driver_endpoint)"
 
-  [ -n "${DASHBOARD_DIST:-}" ] \
-    && log_info "mounting prebuilt UI dist over the pod: $DASHBOARD_DIST"
-
-  helm_resolve_version
-  helm_install_rancher "$kc" "$host"
+  # A driver that ships Rancher itself (docker standalone: the container IS
+  # rancher) declares driver_installs_rancher; the core then skips the
+  # helm chart install. k3d/existing leave it undefined and get helm.
+  if ! declare -F driver_installs_rancher >/dev/null || ! driver_installs_rancher; then
+    [ -n "${DASHBOARD_DIST:-}" ] \
+      && log_info "mounting prebuilt UI dist over the pod: $DASHBOARD_DIST"
+    helm_resolve_version
+    helm_install_rancher "$kc" "$host"
+  else
+    [ -n "${DASHBOARD_DIST:-}" ] \
+      && log_info "mounted prebuilt UI dist over the container UI: $DASHBOARD_DIST"
+  fi
   gates_wait
 
   export MUSTER_HOSTNAME="$host" MUSTER_KUBECONFIG="$kc" MUSTER_PASSWORD="$RANCHER_PASSWORD"

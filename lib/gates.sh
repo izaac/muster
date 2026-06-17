@@ -13,46 +13,58 @@
 _MUSTER_GATES_SH=1
 
 # gates_wait - block until Rancher is serving and its controllers are ready.
+#
+# A driver that ships Rancher itself (e.g. docker standalone, where the
+# container IS rancher) may define driver_gate to run provider-specific
+# HTTP-only readiness checks; gates_wait delegates to it and skips the
+# in-cluster kubectl gates (rollout/webhook/capi) which do not apply. Drivers
+# on a real cluster leave driver_gate undefined and get the kubectl path.
 gates_wait() {
   local kc host
   kc="$(driver_kubeconfig)"
   host="$(driver_endpoint)"
 
-  log_info "waiting: rancher deployment rollout"
-  kubectl --kubeconfig "$kc" -n cattle-system rollout status deploy/rancher --timeout=600s
+  if declare -F driver_gate >/dev/null; then
+    driver_gate "$host"
+  else
+    log_info "waiting: rancher deployment rollout"
+    kubectl --kubeconfig "$kc" -n cattle-system rollout status deploy/rancher --timeout=600s
 
-  if is_true "${EXTERNAL:-}"; then
-    external_apply "$kc" "$host"
+    if is_true "${EXTERNAL:-}"; then
+      external_apply "$kc" "$host"
+    fi
+
+    log_info "waiting: dashboard responds 200"
+    retry 20 5 "dashboard HTTP 200" -- \
+      sh -c "curl -skI --max-time 5 'https://${host}/dashboard/' | head -1 | grep -q ' 200'"
+
+    # 90 attempts (15 min) covers cold CI runners where CRD apply + webhook chart
+    # install saturate the node and gate timing varies run-to-run. Locally ~90s.
+    log_info "waiting: rancher-webhook pod ready"
+    retry 90 10 "rancher-webhook 1/1 Running" -- \
+      sh -c "kubectl --kubeconfig '$kc' -n cattle-system get po -l app=rancher-webhook 2>/dev/null | grep -q '1/1.*Running'"
+
+    # head (>=2.15, Turtles) deploys CAPI into cattle-capi-system; older lines used
+    # cattle-provisioning-capi-system. Accept either.
+    log_info "waiting: capi-webhook-service exists"
+    retry 90 10 "capi-webhook-service" -- \
+      sh -c "kubectl --kubeconfig '$kc' -n cattle-capi-system get service capi-webhook-service 2>/dev/null \
+        || kubectl --kubeconfig '$kc' -n cattle-provisioning-capi-system get service capi-webhook-service 2>/dev/null"
+
+    # Deeper than the dashboard page: proves the auth provider API is serving.
+    log_info "waiting: /v3-public/authProviders/local responds 200"
+    retry 20 5 "authProviders API 200" -- \
+      sh -c "curl -sk --max-time 5 -o /dev/null -w '%{http_code}' 'https://${host}/v3-public/authProviders/local' | grep -q 200"
   fi
-
-  log_info "waiting: dashboard responds 200"
-  retry 20 5 "dashboard HTTP 200" -- \
-    sh -c "curl -skI --max-time 5 'https://${host}/dashboard/' | head -1 | grep -q ' 200'"
-
-  # 90 attempts (15 min) covers cold CI runners where CRD apply + webhook chart
-  # install saturate the node and gate timing varies run-to-run. Locally ~90s.
-  log_info "waiting: rancher-webhook pod ready"
-  retry 90 10 "rancher-webhook 1/1 Running" -- \
-    sh -c "kubectl --kubeconfig '$kc' -n cattle-system get po -l app=rancher-webhook 2>/dev/null | grep -q '1/1.*Running'"
-
-  # head (>=2.15, Turtles) deploys CAPI into cattle-capi-system; older lines used
-  # cattle-provisioning-capi-system. Accept either.
-  log_info "waiting: capi-webhook-service exists"
-  retry 90 10 "capi-webhook-service" -- \
-    sh -c "kubectl --kubeconfig '$kc' -n cattle-capi-system get service capi-webhook-service 2>/dev/null \
-      || kubectl --kubeconfig '$kc' -n cattle-provisioning-capi-system get service capi-webhook-service 2>/dev/null"
-
-  # Deeper than the dashboard page: proves the auth provider API is serving.
-  log_info "waiting: /v3-public/authProviders/local responds 200"
-  retry 20 5 "authProviders API 200" -- \
-    sh -c "curl -sk --max-time 5 -o /dev/null -w '%{http_code}' 'https://${host}/v3-public/authProviders/local' | grep -q 200"
 
   if declare -F driver_settle >/dev/null; then
     log_info "waiting: substrate to settle"
     driver_settle || log_warn "substrate did not settle in time - proceeding anyway"
   fi
 
-  if is_true "${EXTERNAL:-}"; then
+  # warmup_provisioning drives kubectl; only meaningful when the driver
+  # exposes a kubeconfig (k3d/existing), not for the docker standalone path.
+  if is_true "${EXTERNAL:-}" && [ -n "$kc" ]; then
     warmup_provisioning "$kc"
   fi
 

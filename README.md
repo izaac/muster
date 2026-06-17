@@ -22,7 +22,11 @@ logic is ported in from a proven Playwright e2e provisioner over Phases 1-4.
   consumer handoff. None of it knows which substrate it runs on.
 - **Substrate drivers** (`drivers/`) behind a four-verb contract:
   `driver_up`, `driver_down`, `driver_kubeconfig`, `driver_endpoint`.
-  Ships `k3d` and `existing`; `docker` is a deferred, honest stub.
+  Ships `k3d` (helm chart on k3s-in-docker) and `docker` (standalone
+  `rancher/rancher` container, no helm/k8s cluster); `existing` is a deferred,
+  honest stub. Drivers may declare optional hooks (`driver_installs_rancher`,
+  `driver_gate`, `driver_resolve_image`, `driver_settle`) so a self-contained
+  substrate like docker opts out of the core's helm path cleanly.
 - **Framework-agnostic handoff**: `--out env|cypress|json`. muster brings the
   Rancher up and sets the bootstrap password; each framework keeps owning its
   own first-login/setup spec.
@@ -30,7 +34,8 @@ logic is ported in from a proven Playwright e2e provisioner over Phases 1-4.
 ## Usage
 
 ```sh
-muster up --provider k3d                      # internal sslip.io Rancher
+muster up --provider k3d                      # internal sslip.io Rancher (helm chart)
+muster up --provider docker                   # standalone rancher/rancher container
 muster up --provider k3d --external           # public via cloudflared tunnel
 muster up --provider existing --out cypress   # gate + hand off a running cluster
 muster down                                   # tear down + sweep state
@@ -40,8 +45,10 @@ Copy `config.sh.example` to `config.sh` to set defaults; any flag overrides it.
 
 ## Requirements
 
-`bash` 4+, `kubectl`, `helm`, and (for the k3d provider) `k3d`. External mode
-fetches a pinned, checksum-verified `cloudflared`.
+`bash` 4+, `kubectl`, `helm`, and (for the k3d provider) `k3d`. The docker
+provider needs only `docker` for community channels (`rancher/rancher:head`);
+staging/prime channels still need `helm` to resolve the image tag. External
+mode fetches a pinned, checksum-verified `cloudflared`.
 
 ## Development
 

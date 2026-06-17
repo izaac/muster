@@ -103,6 +103,17 @@ teardown() {
   [ "$(ui_resolve_branch "$REPO" v2.15-head)" = "master" ]
 }
 
+@test "ui_resolve_branch: an explicit override wins over derivation" {
+  _mkrepo
+  [ "$(ui_resolve_branch "$REPO" v2.15-head release-2.14)" = "release-2.14" ]
+}
+
+@test "ui_resolve_branch: a non-existent override is refused" {
+  _mkrepo
+  run ui_resolve_branch "$REPO" head release-9.9
+  [ "$status" -ne 0 ]
+}
+
 # --- ui_engines_node: read the range out of a package.json -------------------
 
 @test "ui_engines_node: reads the declared node range" {

@@ -57,10 +57,22 @@ ui_engines_node() {
     | sed -E 's/.*"node":[[:space:]]*"([^"]*)".*/\1/'
 }
 
-# ui_resolve_branch <src> <tag> - derive the wanted branch and fall back to
-# master when a release branch does not exist yet (newest minor still master).
+# ui_resolve_branch <src> <tag> [override] - the dashboard branch to build.
+# An explicit override (from --dashboard-branch) wins and is used verbatim
+# after an existence check, honouring upstream's decoupling of the UI branch
+# from the image version (e.g. a 2.15 alpha backend tested with release-2.14
+# UI). Otherwise the branch is derived from the tag, falling back to master
+# when the derived release branch does not exist yet.
 ui_resolve_branch() {
-  local src="${1:?src required}" tag="${2:?tag required}" want
+  local src="${1:?src required}" tag="${2:?tag required}" override="${3:-}" want
+  if [ -n "$override" ]; then
+    if git -C "$src" rev-parse --verify --quiet "refs/remotes/origin/${override}" >/dev/null 2>&1 \
+      || git -C "$src" rev-parse --verify --quiet "refs/heads/${override}" >/dev/null 2>&1; then
+      printf '%s' "$override"
+      return 0
+    fi
+    die "--dashboard-branch '$override' does not exist in '$src'"
+  fi
   want="$(ui_branch_from_tag "$tag")"
   if [ "$want" != "master" ] \
     && ! git -C "$src" rev-parse --verify --quiet "refs/remotes/origin/${want}" >/dev/null 2>&1 \
@@ -100,7 +112,7 @@ buildui_run() {
   require_cmd yarn "enter the devenv shell"
 
   local branch dist cur
-  branch="$(ui_resolve_branch "$src" "$RANCHER_IMAGE_TAG")"
+  branch="$(ui_resolve_branch "$src" "$RANCHER_IMAGE_TAG" "${DASHBOARD_BRANCH:-}")"
   dist="${DASHBOARD_DIST:-$src/dist}"
   cur="$(git -C "$src" rev-parse --abbrev-ref HEAD)"
 

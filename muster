@@ -52,6 +52,8 @@ Flags:
                                     2.13.4-rc1 (default: head).
   --out <env|cypress|json>          Handoff format (default: env).
   --dashboard-src <path>            rancher/dashboard checkout to build (build-ui).
+  --dashboard-branch <name>         Force the UI branch (build-ui); default derives
+                                    it from --version (head->master, vX.Y->release-X.Y).
   --dashboard-dist <path>           Prebuilt UI dist to mount over the pod UI (up),
                                     or where build-ui writes (default: <src>/dist).
   --config <path>                   Config file to source (default: ./config.sh).
@@ -77,6 +79,7 @@ RANCHER_PASSWORD="${RANCHER_PASSWORD:-password1234}"
 OUT="env"
 DASHBOARD_SRC="${DASHBOARD_SRC:-}"
 DASHBOARD_DIST="${DASHBOARD_DIST:-}"
+DASHBOARD_BRANCH="${DASHBOARD_BRANCH:-}"
 CONFIG=""
 
 CMD="${1:-help}"
@@ -132,6 +135,10 @@ while [ $# -gt 0 ]; do
       DASHBOARD_DIST="${2:?--dashboard-dist needs a value}"
       shift 2
       ;;
+    --dashboard-branch)
+      DASHBOARD_BRANCH="${2:?--dashboard-branch needs a value}"
+      shift 2
+      ;;
     --config)
       shift 2
       ;;
@@ -162,7 +169,7 @@ case "$RANCHER_REPO" in
 esac
 
 export INSTANCE EXTERNAL RANCHER_REPO RANCHER_IMAGE_TAG OUT RANCHER_PASSWORD
-export DASHBOARD_SRC DASHBOARD_DIST
+export DASHBOARD_SRC DASHBOARD_DIST DASHBOARD_BRANCH
 
 load_core() {
   # shellcheck source=lib/download.sh
@@ -231,6 +238,7 @@ repo=$RANCHER_REPO
 version=$RANCHER_IMAGE_TAG
 out=$OUT
 dashboard_src=${DASHBOARD_SRC:-<none>}
+dashboard_branch=${DASHBOARD_BRANCH:-<derived>}
 dashboard_dist=${DASHBOARD_DIST:-<none>}
 config=${CONFIG:-<none>}
 EOF

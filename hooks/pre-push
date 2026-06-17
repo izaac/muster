@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Tests (and lint) must pass before any push.
+exec "$(git rev-parse --show-toplevel)/hooks/run-checks.sh"

@@ -51,6 +51,19 @@ shfmt -d -i 2 -ci -bn muster lib drivers
 bats test/
 ```
 
+### Git hooks
+
+The repo ships native git hooks (no external hook manager) under `hooks/`. They
+run the same shellcheck + shfmt + bats suite as CI, on both commit and push, so
+a failing test blocks the push. Enable them once per clone:
+
+```sh
+git config core.hooksPath hooks
+```
+
+The hooks look for `shfmt` and `bats` on `PATH` and in `~/.local/bin` /
+`~/.local/bats-core/bin`; install them there if they are not already available.
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).

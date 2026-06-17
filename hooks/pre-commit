@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Run the full check suite before allowing a commit.
+exec "$(git rev-parse --show-toplevel)/hooks/run-checks.sh"

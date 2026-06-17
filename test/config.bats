@@ -19,6 +19,7 @@ field() {
   [ "$(field provider "$output")" = "k3d" ]
   [ "$(field instance "$output")" = "e2e" ]
   [ "$(field external "$output")" = "false" ]
+  [ "$(field repo "$output")" = "rancher-latest" ]
   [ "$(field version "$output")" = "head" ]
   [ "$(field out "$output")" = "env" ]
   [ "$(field config "$output")" = "<none>" ]
@@ -26,20 +27,28 @@ field() {
 
 @test "flags override every default" {
   run "$MUSTER" show --provider existing --instance lab \
-    --external --version 2.10.1 --out json
+    --external --repo rancher-alpha --version 2.10.1 --out json
   [ "$status" -eq 0 ]
   [ "$(field provider "$output")" = "existing" ]
   [ "$(field instance "$output")" = "lab" ]
   [ "$(field external "$output")" = "true" ]
+  [ "$(field repo "$output")" = "rancher-alpha" ]
   [ "$(field version "$output")" = "2.10.1" ]
   [ "$(field out "$output")" = "json" ]
+}
+
+@test "an unknown --repo channel is rejected" {
+  run "$MUSTER" show --repo rancher-bogus
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unknown --repo"* ]]
 }
 
 @test "explicit --config seeds values" {
   cat > cfg.sh <<'EOF'
 PROVIDER="existing"
 INSTANCE="seeded"
-RANCHER_LINE="prime"
+RANCHER_REPO="rancher-prime"
+RANCHER_IMAGE_TAG="2.10.1"
 OUT="cypress"
 EXTERNAL="true"
 EOF
@@ -47,7 +56,8 @@ EOF
   [ "$status" -eq 0 ]
   [ "$(field provider "$output")" = "existing" ]
   [ "$(field instance "$output")" = "seeded" ]
-  [ "$(field version "$output")" = "prime" ]
+  [ "$(field repo "$output")" = "rancher-prime" ]
+  [ "$(field version "$output")" = "2.10.1" ]
   [ "$(field out "$output")" = "cypress" ]
   [ "$(field external "$output")" = "true" ]
 }
@@ -56,13 +66,14 @@ EOF
   cat > cfg.sh <<'EOF'
 PROVIDER="existing"
 INSTANCE="seeded"
-RANCHER_LINE="prime"
+RANCHER_REPO="rancher-prime"
 OUT="cypress"
 EOF
-  run "$MUSTER" show --config cfg.sh --provider k3d --version head --out env
+  run "$MUSTER" show --config cfg.sh --provider k3d --repo rancher-latest --version head --out env
   [ "$status" -eq 0 ]
   [ "$(field provider "$output")" = "k3d" ]
   [ "$(field instance "$output")" = "seeded" ]
+  [ "$(field repo "$output")" = "rancher-latest" ]
   [ "$(field version "$output")" = "head" ]
   [ "$(field out "$output")" = "env" ]
 }
@@ -70,12 +81,12 @@ EOF
 @test "implicit ./config.sh is discovered" {
   cat > config.sh <<'EOF'
 INSTANCE="autoload"
-RANCHER_LINE="latest"
+RANCHER_REPO="rancher-alpha"
 EOF
   run "$MUSTER" show
   [ "$status" -eq 0 ]
   [ "$(field instance "$output")" = "autoload" ]
-  [ "$(field version "$output")" = "latest" ]
+  [ "$(field repo "$output")" = "rancher-alpha" ]
   [ "$(field config "$output")" = "./config.sh" ]
 }
 

@@ -10,16 +10,22 @@ PROVIDER="k3d"
 INSTANCE="e2e"
 
 # --- Rancher version matrix --------------------------------------------------
-# RANCHER_LINE selects the chart line, resolved to a concrete chart + image in
-# Phase 1 (ported from the ansible resolve-helm-version task):
-#   head      newest devel chart on the optimus head line
-#   prime     SUSE Rancher Prime registry
-#   latest    releases.rancher.com latest
-#   alpha     alpha channel
-#   <pin>     an explicit chart/image version (e.g. 2.10.1)
-RANCHER_LINE="head"
+# Two axes, ported from the ansible resolve-helm-version task:
+#
+# RANCHER_REPO selects the release channel (chart URL + image registry):
+#   rancher-latest    optimus RC staging (stgregistry image)   [default]
+#   rancher-alpha     optimus alpha staging (stgregistry image)
+#   rancher-prime     SUSE prime registry; GATED, needs pull creds set up
+#   rancher-community Docker Hub stable
+#   rancher-com-rc    Docker Hub RC
+#   rancher-com-alpha Docker Hub alpha
+# The alpha/rc staging channels are the intended happy path; prime is opt-in.
+RANCHER_REPO="rancher-latest"
 
-# RANCHER_IMAGE_TAG: override the resolved image tag (default: resolved/head).
+# RANCHER_IMAGE_TAG: "head" (newest devel chart in the channel) or a version
+# pin like 2.13 / 2.13.4 / 2.13.4-rc1. For staging channels the resolved chart
+# version becomes the image tag (v<chart_version>); community channels use the
+# tag as-is from Docker Hub. --version overrides.
 RANCHER_IMAGE_TAG="head"
 
 # RANCHER_PASSWORD: bootstrap password handed to the framework's setup spec.

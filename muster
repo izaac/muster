@@ -44,15 +44,18 @@ Flags:
   --provider <k3d|existing|docker>  Substrate driver (default: k3d).
   --instance <name>                 Instance id (default: e2e).
   --external                        Expose Rancher via a public tunnel.
-  --version <line>                  Rancher line: head|prime|latest|alpha|<pin>
-                                    (default: head).
+  --repo <channel>                  Rancher channel (default: rancher-latest):
+                                    rancher-prime|rancher-latest|rancher-alpha|
+                                    rancher-community|rancher-com-rc|rancher-com-alpha.
+  --version <tag>                   Image tag: head or a version like 2.13 /
+                                    2.13.4-rc1 (default: head).
   --out <env|cypress|json>          Handoff format (default: env).
   --config <path>                   Config file to source (default: ./config.sh).
   -h, --help                        Show this help.
 
 Examples:
   muster up --provider k3d
-  muster up --provider k3d --external --version head
+  muster up --provider k3d --external --repo rancher-alpha --version head
   muster up --provider existing --out cypress
   muster down
 USAGE
@@ -62,7 +65,8 @@ USAGE
 PROVIDER="k3d"
 INSTANCE="e2e"
 EXTERNAL="false"
-RANCHER_LINE="head"
+RANCHER_REPO="rancher-latest"
+RANCHER_IMAGE_TAG="head"
 OUT="env"
 CONFIG=""
 
@@ -100,7 +104,11 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --version)
-      RANCHER_LINE="${2:?--version needs a value}"
+      RANCHER_IMAGE_TAG="${2:?--version needs a value}"
+      shift 2
+      ;;
+    --repo)
+      RANCHER_REPO="${2:?--repo needs a value}"
       shift 2
       ;;
     --out)
@@ -131,8 +139,12 @@ case "$OUT" in
   env | cypress | json) ;;
   *) die "unknown --out: $OUT (env|cypress|json)" ;;
 esac
+case "$RANCHER_REPO" in
+  rancher-prime | rancher-latest | rancher-alpha | rancher-community | rancher-com-rc | rancher-com-alpha) ;;
+  *) die "unknown --repo: $RANCHER_REPO (rancher-prime|rancher-latest|rancher-alpha|rancher-community|rancher-com-rc|rancher-com-alpha)" ;;
+esac
 
-export INSTANCE EXTERNAL RANCHER_LINE OUT
+export INSTANCE EXTERNAL RANCHER_REPO RANCHER_IMAGE_TAG OUT
 
 load_core() {
   # shellcheck source=lib/helm.sh
@@ -167,7 +179,8 @@ case "$CMD" in
 provider=$PROVIDER
 instance=$INSTANCE
 external=$EXTERNAL
-version=$RANCHER_LINE
+repo=$RANCHER_REPO
+version=$RANCHER_IMAGE_TAG
 out=$OUT
 config=${CONFIG:-<none>}
 EOF

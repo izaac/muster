@@ -6,10 +6,15 @@
 [ -n "${_MUSTER_TUNNEL_SH:-}" ] && return 0
 _MUSTER_TUNNEL_SH=1
 
+# shellcheck disable=SC2034
 CLOUDFLARED_VERSION="${CLOUDFLARED_VERSION:-2026.6.0}"
+# shellcheck disable=SC2034
 CLOUDFLARED_SHA256_linux_amd64="08d27c4c5d3ed73ee3e98ef2ddceb4ad09fd4cfc28e243565a189538e8ccd706"
+# shellcheck disable=SC2034
 CLOUDFLARED_SHA256_linux_arm64="8482ebf1e74a2a4a1a9f1e090e17e3de08423f94100ece6789287cb26fb9480f"
+# shellcheck disable=SC2034
 CLOUDFLARED_SHA256_darwin_amd64="2d620f9e7b2ddf5e6f5fe1ed4eee308d8dc4c338bc936bfb18e0022a344daa66"
+# shellcheck disable=SC2034
 CLOUDFLARED_SHA256_darwin_arm64="1b66920a280235b0180e935c6fb2adcf91fceeeaf66c4365e606bd37d6c587ef"
 
 _muster_sha256() {
@@ -31,7 +36,10 @@ ensure_cloudflared() {
   case "$(uname -m)" in
     x86_64) arch=amd64 ;;
     aarch64 | arm64) arch=arm64 ;;
-    *) log_err "unsupported arch '$(uname -m)' for cloudflared bootstrap"; return 1 ;;
+    *)
+      log_err "unsupported arch '$(uname -m)' for cloudflared bootstrap"
+      return 1
+      ;;
   esac
 
   case "$(uname -s)" in
@@ -46,7 +54,10 @@ ensure_cloudflared() {
       url="https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-darwin-${arch}.tgz"
       is_tgz=1
       ;;
-    *) log_err "unsupported OS '$(uname -s)' for cloudflared bootstrap"; return 1 ;;
+    *)
+      log_err "unsupported OS '$(uname -s)' for cloudflared bootstrap"
+      return 1
+      ;;
   esac
 
   local cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/muster"
@@ -115,10 +126,10 @@ tunnel_up() {
 
   if command -v setsid >/dev/null 2>&1; then
     setsid "$cf" tunnel --url "https://localhost:${port}" --no-tls-verify \
-      >>"$log" 2>&1 < /dev/null &
+      >>"$log" 2>&1 </dev/null &
   else
     nohup "$cf" tunnel --url "https://localhost:${port}" --no-tls-verify \
-      >>"$log" 2>&1 < /dev/null &
+      >>"$log" 2>&1 </dev/null &
   fi
   echo "$!" >"$pidfile"
 
@@ -133,6 +144,14 @@ tunnel_up() {
     return 1
   fi
   echo "$url"
+}
+
+# tunnel_url - retrieve the current tunnel url from the instance log.
+tunnel_url() {
+  local log="/tmp/muster-tunnel-${INSTANCE}.log"
+  if [ -f "$log" ]; then
+    grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$log" | head -1 || true
+  fi
 }
 
 # tunnel_down - stop the tunnel recorded for this instance.

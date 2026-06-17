@@ -282,6 +282,14 @@ EOF
     ;;
   env)
     load_core
+    . "$MUSTER_HOME/lib/tunnel.sh"
+    if is_true "${EXTERNAL:-}"; then
+      t_url="$(tunnel_url)"
+      [ -n "$t_url" ] && export EXTERNAL_HOSTNAME="${t_url#https://}"
+    fi
+    kc="$(driver_kubeconfig)"
+    host="$(driver_endpoint)"
+    export MUSTER_HOSTNAME="$host" MUSTER_KUBECONFIG="$kc" MUSTER_PASSWORD="$RANCHER_PASSWORD"
     handoff_write "$OUT"
     ;;
   *)

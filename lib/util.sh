@@ -50,9 +50,17 @@ install_err_trap() {
 
 # --- value coercion ----------------------------------------------------------
 
-# is_true <value> - true for 1/true/yes/on (case-insensitive); false otherwise.
+# is_true <value> - true for 1/true/yes/on (case-insensitive, surrounding
+# whitespace ignored); false for everything else, including empty/unset. The
+# accepted set is exactly these four spellings: "y", "t", "enable", "2", etc.
+# are deliberately NOT truthy, so config typos fail closed rather than silently
+# enabling a mode.
 is_true() {
-  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+  local v
+  v="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  case "$v" in
     1 | true | yes | on) return 0 ;;
     *) return 1 ;;
   esac

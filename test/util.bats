@@ -7,18 +7,46 @@ setup() {
   . "$ROOT/lib/util.sh"
 }
 
-@test "is_true accepts truthy spellings" {
-  for v in 1 true TRUE Yes on ON; do
+@test "is_true accepts every truthy spelling and case" {
+  local v
+  for v in 1 true TRUE True tRuE yes YES Yes yEs on ON On oN; do
     run is_true "$v"
-    [ "$status" -eq 0 ]
+    [ "$status" -eq 0 ] || {
+      echo "expected truthy: '$v'"
+      false
+    }
   done
 }
 
-@test "is_true rejects falsy and empty" {
-  for v in 0 false no off "" garbage; do
+@test "is_true ignores surrounding whitespace" {
+  local v
+  for v in " true" "true " "  1  " "	yes" "on	" " TRUE " "
+true
+"; do
     run is_true "$v"
-    [ "$status" -ne 0 ]
+    [ "$status" -eq 0 ] || {
+      echo "expected truthy with ws: '$v'"
+      false
+    }
   done
+}
+
+@test "is_true rejects falsy, empty, and near-misses" {
+  local v
+  for v in 0 false FALSE no NO off OFF "" " " "	" garbage 2 10 "1.0" \
+    y t yep yess "true false" "1 0" enable enabled disabled nul null \
+    "o n" "ye s" "-1" "00"; do
+    run is_true "$v"
+    [ "$status" -ne 0 ] || {
+      echo "expected falsy: '$v'"
+      false
+    }
+  done
+}
+
+@test "is_true on unset arg is falsy, not an error" {
+  run is_true
+  [ "$status" -ne 0 ]
 }
 
 @test "require_cmd passes for an existing binary" {

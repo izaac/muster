@@ -36,6 +36,7 @@ Commands:
   warmup    Prime the provisioning controller to avoid the cold-start flake.
   down      Tear down the cluster and sweep tunnel + substrate state.
   env       Print the consumer handoff for the current instance.
+  show      Print the resolved configuration (after config file + flags).
   version   Print the muster version.
   help      Show this help.
 
@@ -66,7 +67,7 @@ OUT="env"
 CONFIG=""
 
 CMD="${1:-help}"
-[ $# -gt 0 ] && shift || true
+if [ $# -gt 0 ]; then shift; fi
 
 # A config file may pre-seed the defaults above before flags override them.
 # Honour an explicit --config anywhere on the line by pre-scanning for it.
@@ -160,6 +161,16 @@ cmd_down() { die "down: not implemented (Phase 1)"; }
 case "$CMD" in
   version)
     echo "muster $MUSTER_VERSION"
+    ;;
+  show)
+    cat <<EOF
+provider=$PROVIDER
+instance=$INSTANCE
+external=$EXTERNAL
+version=$RANCHER_LINE
+out=$OUT
+config=${CONFIG:-<none>}
+EOF
     ;;
   help | -h | --help)
     usage

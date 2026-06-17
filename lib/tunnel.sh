@@ -86,8 +86,13 @@ tunnel_up() {
   pidfile="/tmp/muster-tunnel-${INSTANCE}.pid"
   : >"$log"
 
-  setsid "$cf" tunnel --url "https://localhost:${port}" --no-tls-verify \
-    >>"$log" 2>&1 &
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$cf" tunnel --url "https://localhost:${port}" --no-tls-verify \
+      >>"$log" 2>&1 < /dev/null &
+  else
+    nohup "$cf" tunnel --url "https://localhost:${port}" --no-tls-verify \
+      >>"$log" 2>&1 < /dev/null &
+  fi
   echo "$!" >"$pidfile"
 
   local i

@@ -91,7 +91,7 @@ ui_node_gate() {
   eng="$(ui_engines_node "$src")"
   min="$(engines_min_major "$eng")"
   [ -n "$min" ] || return 0
-  require_cmd node "enter the devenv shell or install Node >= ${min}"
+  require_cmd node "run muster via its container image, or install Node >= ${min}"
   cur="$(node_major "$(node --version)")"
   if [ "$cur" -lt "$min" ]; then
     die "dashboard build needs Node >= ${min} (engines '${eng}'); have $(node --version)"
@@ -109,7 +109,7 @@ buildui_run() {
   [ -d "$src/.git" ] || die "--dashboard-src '$src' is not a git checkout"
   [ -f "$src/scripts/version" ] || die "'$src' has no scripts/version (not rancher/dashboard?)"
   require_cmd git
-  require_cmd yarn "enter the devenv shell"
+  require_cmd yarn "run muster via its container image, or install yarn"
 
   local branch dist cur
   branch="$(ui_resolve_branch "$src" "$RANCHER_IMAGE_TAG" "${DASHBOARD_BRANCH:-}")"

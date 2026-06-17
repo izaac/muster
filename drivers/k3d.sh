@@ -26,6 +26,12 @@ k3d_index() {
 k3d_network() { echo "k3d-${INSTANCE}"; }
 k3d_https_port() { echo $(($(k3d_index) + 8443)); }
 k3d_http_port() { echo $(($(k3d_index) + 8080)); }
+k3d_api_port() { echo $(($(k3d_index) + 6443)); }
+
+# in_container - true when muster itself runs inside a container. Containerised
+# runs drive the host Docker daemon and create sibling k3d containers, so the
+# cluster's API and ingress are reached differently than from a host shell.
+in_container() { [ -f /.dockerenv ]; }
 
 driver_kubeconfig() {
   k3d kubeconfig write "$INSTANCE" 2>/dev/null
@@ -47,8 +53,8 @@ driver_endpoint() {
 }
 
 driver_up() {
-  require_cmd k3d "enter the devenv shell"
-  require_cmd helm "enter the devenv shell"
+  require_cmd k3d "run muster via its container image, or install k3d"
+  require_cmd helm "run muster via its container image, or install helm"
 
   if k3d cluster list 2>/dev/null | awk '{print $1}' | grep -qx "$INSTANCE"; then
     log_info "k3d cluster '$INSTANCE' already exists, reusing it"
@@ -64,6 +70,12 @@ driver_up() {
     -p "$(k3d_http_port):80@loadbalancer"
     --wait --timeout 180s
   )
+  # Containerised muster reaches the API through the host gateway: k3d binds the
+  # API on the host and writes host.docker.internal into the kubeconfig (and its
+  # TLS SANs), which resolves from inside the container on every platform.
+  if in_container; then
+    create_args+=(--api-port "host.docker.internal:$(k3d_api_port)")
+  fi
   if [ -n "${DASHBOARD_DIST:-}" ]; then
     [ -d "$DASHBOARD_DIST" ] || die "--dashboard-dist '$DASHBOARD_DIST' is not a directory"
     create_args+=(-v "${DASHBOARD_DIST}:/dashboard-dist@server:0")
@@ -71,6 +83,13 @@ driver_up() {
 
   log_info "k3d: creating cluster $INSTANCE"
   k3d "${create_args[@]}"
+
+  # Join the cluster network so the gates can reach the serverlb at its bridge IP
+  # (<ip>.sslip.io). On Docker Desktop the bridge lives inside the VM and is not
+  # routable from the host, so the muster container must be on the network itself.
+  if in_container; then
+    docker network connect "$(k3d_network)" "$(cat /etc/hostname)" 2>/dev/null || true
+  fi
 
   local host
   host="$(driver_endpoint)"

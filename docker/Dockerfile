@@ -38,10 +38,10 @@ LABEL org.opencontainers.image.title="muster" \
       org.opencontainers.image.licenses="Apache-2.0"
 
 # Runtime-only packages: git (build-ui checkout), curl + ca-certificates
-# (verified downloads at run time), tar/gzip (chart handling). bash and
-# sha256sum are already present in bci-base.
+# (verified downloads at run time), tar/gzip (chart handling), gawk (version
+# and digest parsing in lib/). bash, sed and sha256sum are already present.
 RUN zypper --non-interactive install --no-recommends \
-      bash git curl ca-certificates tar gzip && \
+      bash git curl ca-certificates tar gzip gawk && \
     zypper clean --all && \
     update-ca-certificates
 

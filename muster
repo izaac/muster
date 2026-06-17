@@ -67,6 +67,7 @@ INSTANCE="e2e"
 EXTERNAL="false"
 RANCHER_REPO="rancher-latest"
 RANCHER_IMAGE_TAG="head"
+RANCHER_PASSWORD="${RANCHER_PASSWORD:-password1234}"
 OUT="env"
 CONFIG=""
 
@@ -144,7 +145,7 @@ case "$RANCHER_REPO" in
   *) die "unknown --repo: $RANCHER_REPO (rancher-prime|rancher-latest|rancher-alpha|rancher-community|rancher-com-rc|rancher-com-alpha)" ;;
 esac
 
-export INSTANCE EXTERNAL RANCHER_REPO RANCHER_IMAGE_TAG OUT
+export INSTANCE EXTERNAL RANCHER_REPO RANCHER_IMAGE_TAG OUT RANCHER_PASSWORD
 
 load_core() {
   # shellcheck source=lib/download.sh
@@ -166,11 +167,33 @@ load_core() {
 }
 
 # High-level command flows are assembled in Phase 1+ as the libs land.
-cmd_up() { die "up: not implemented (Phase 1)"; }
-cmd_wait() { die "wait: not implemented (Phase 1)"; }
+cmd_up() {
+  is_true "$EXTERNAL" \
+    && die "external mode is not implemented yet (Phase 3); run without --external"
+
+  driver_up
+  local kc host
+  kc="$(driver_kubeconfig)"
+  host="$(driver_endpoint)"
+
+  helm_resolve_version
+  helm_install_rancher "$kc" "$host"
+  gates_wait
+
+  export MUSTER_HOSTNAME="$host" MUSTER_KUBECONFIG="$kc" MUSTER_PASSWORD="$RANCHER_PASSWORD"
+  handoff_write "$OUT"
+}
+cmd_wait() {
+  gates_wait
+  local kc host
+  kc="$(driver_kubeconfig)"
+  host="$(driver_endpoint)"
+  export MUSTER_HOSTNAME="$host" MUSTER_KUBECONFIG="$kc" MUSTER_PASSWORD="$RANCHER_PASSWORD"
+  handoff_write "$OUT"
+}
 cmd_tunnel() { die "tunnel: not implemented (Phase 3)"; }
 cmd_warmup() { die "warmup: not implemented (Phase 3)"; }
-cmd_down() { die "down: not implemented (Phase 1)"; }
+cmd_down() { driver_down; }
 
 case "$CMD" in
   version)

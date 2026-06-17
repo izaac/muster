@@ -56,8 +56,14 @@ setup() {
   [[ "$output" == *"docker driver is not implemented"* ]]
 }
 
-@test "up on k3d reaches the Phase 1 stub" {
-  run "$MUSTER" up --provider k3d
+@test "up refuses external mode until Phase 3" {
+  run "$MUSTER" up --provider k3d --external
   [ "$status" -ne 0 ]
-  [[ "$output" == *"not implemented (Phase 1)"* ]]
+  [[ "$output" == *"external mode is not implemented"* ]]
+}
+
+@test "up on the docker provider is an honest stub" {
+  run "$MUSTER" up --provider docker
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"docker driver is not implemented"* ]]
 }

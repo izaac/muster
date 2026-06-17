@@ -58,11 +58,12 @@ dv_sha_from_list() {
 # dv_sha_from_gh_json <release_json> <asset_name> - extract the sha256 of a
 # release asset from the GitHub releases API JSON. Modern asset objects carry a
 # "digest":"sha256:<hex>" field; this matches the asset by name and returns its
-# digest without requiring jq. Pure: operates on an already-fetched file.
+# digest without requiring jq. Tolerates pretty-printed JSON by stripping
+# insignificant whitespace first. Pure: operates on an already-fetched file.
 dv_sha_from_gh_json() {
   local file="${1:-}" name="${2:-}"
   [ -r "$file" ] && [ -n "$name" ] || return 1
-  tr ',' '\n' <"$file" \
+  tr -d ' \t\r\n' <"$file" | tr ',' '\n' \
     | awk -v n="\"name\":\"${name}\"" '
         index($0, n) { found=1; next }
         found && /"name":"/ { exit }

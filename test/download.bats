@@ -183,6 +183,34 @@ EOF
   [ "$output" != "$BAD" ]
 }
 
+@test "dv_sha_from_gh_json tolerates pretty-printed JSON with whitespace" {
+  cat >"$TMP/rel.json" <<EOF
+{
+  "assets": [
+    {
+      "name": "cert-manager.crds.yaml",
+      "digest": "sha256:$GOOD"
+    }
+  ]
+}
+EOF
+  run dv_sha_from_gh_json "$TMP/rel.json" "cert-manager.crds.yaml"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$GOOD" ]
+}
+
+@test "dv_sha_from_gh_json yields nothing when the asset digest is null" {
+  cat >"$TMP/rel.json" <<EOF
+{
+  "assets": [
+    { "name": "cert-manager.crds.yaml", "digest": null }
+  ]
+}
+EOF
+  run dv_sha_from_gh_json "$TMP/rel.json" "cert-manager.crds.yaml"
+  [ -z "$output" ]
+}
+
 # --- dv_file_sha -------------------------------------------------------------
 
 @test "dv_file_sha computes the sha256 of a real file" {

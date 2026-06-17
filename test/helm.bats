@@ -165,3 +165,14 @@ setup() {
   [ "$(resolve_image_tag '' 2.14.0 head)" = "head" ]
   [ "$(resolve_image_tag '' 2.13.3 v2.13.3)" = "v2.13.3" ]
 }
+
+# --- cert-manager CRD pin ----------------------------------------------------
+
+@test "the pinned cert-manager CRD checksum is a well-formed sha256" {
+  # Guards against a typo in the source pin: it must be exactly 64 hex chars.
+  . "$ROOT/lib/download.sh"
+  pin="${MUSTER_CERT_MANAGER_CRDS_SHA256[$CERT_MANAGER_VERSION_DEFAULT]}"
+  run dv_normalize_sha "$pin"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$pin" ]
+}

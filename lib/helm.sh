@@ -44,6 +44,18 @@ declare -gA MUSTER_REPO_IMAGE=(
   ["rancher-com-alpha"]=""
 )
 
+# Default cert-manager version and the SHA256 of its release CRD manifest,
+# pinned in source for a deterministic, reviewable supply chain. GitHub only
+# backfills release-asset digests for recent uploads, so older cert-manager
+# tags (e.g. v1.16.x) report "digest": null; a source pin is the strongest and
+# most reproducible stance. For a version not pinned here, set
+# CERT_MANAGER_CRDS_SHA256 explicitly, or rely on the GitHub asset digest when
+# the upstream release carries one.
+CERT_MANAGER_VERSION_DEFAULT="v1.16.2"
+declare -gA MUSTER_CERT_MANAGER_CRDS_SHA256=(
+  ["v1.16.2"]="0555ce0be71aeedd59aa7e6c12e557f44b8df133634bfc5f2cf976b5887e1198"
+)
+
 # repo_valid <key> - true if the channel key is known.
 repo_valid() { [ -n "${MUSTER_REPO_URL[${1:-}]+x}" ]; }
 
@@ -131,6 +143,58 @@ helm_resolve_version() {
   log_info "resolved: repo=$repo chart=$RANCHER_CHART_VERSION image=${RANCHER_IMAGE:-rancher/rancher} tag=$RANCHER_IMAGE_TAG_RESOLVED"
 }
 
-# helm_install_rancher - cert-manager + rancher install. Wired in the Phase 1
-# driver step; the resolution above is complete and unit-tested.
-helm_install_rancher() { die "helm_install_rancher: not implemented (Phase 1 driver wiring)"; }
+# helm_install_rancher <kubeconfig> <hostname> - install cert-manager and
+# Rancher. Assumes helm_resolve_version has run (RANCHER_* exported and the
+# Rancher chart repo added). The cert-manager CRD manifest is SHA256-verified
+# before it is applied; its checksum comes from the GitHub release asset digest
+# unless CERT_MANAGER_CRDS_SHA256 pins it inline.
+helm_install_rancher() {
+  local kc="${1:?kubeconfig path required}" host="${2:?hostname required}"
+  local cmver="${CERT_MANAGER_VERSION:-$CERT_MANAGER_VERSION_DEFAULT}"
+  local pin="${CERT_MANAGER_CRDS_SHA256:-${MUSTER_CERT_MANAGER_CRDS_SHA256[$cmver]:-}}"
+  require_cmd kubectl
+  require_cmd helm
+
+  local crds
+  crds="$(mktemp)"
+  local crds_url="https://github.com/cert-manager/cert-manager/releases/download/${cmver}/cert-manager.crds.yaml"
+  if [ -n "$pin" ]; then
+    DV_URL="$crds_url" DV_DEST="$crds" DV_FORMAT="inline" \
+      DV_SHA256="$pin" download_verify >/dev/null
+  else
+    DV_URL="$crds_url" DV_DEST="$crds" DV_FORMAT="github_release" \
+      DV_GITHUB_REPO="cert-manager/cert-manager" DV_GITHUB_TAG="$cmver" \
+      DV_ARTIFACT_NAME="cert-manager.crds.yaml" download_verify >/dev/null
+  fi
+
+  log_info "cert-manager $cmver (verified CRDs)"
+  kubectl --kubeconfig "$kc" apply -f "$crds"
+  rm -f "$crds"
+  retry 3 5 "helm repo add jetstack" -- \
+    helm --kubeconfig "$kc" repo add jetstack https://charts.jetstack.io --force-update
+  helm --kubeconfig "$kc" upgrade --install cert-manager jetstack/cert-manager \
+    --namespace cert-manager --create-namespace \
+    --version "$cmver" --wait --timeout 5m
+  kubectl --kubeconfig "$kc" -n cert-manager rollout status \
+    deploy/cert-manager-webhook --timeout=180s
+
+  local image="${RANCHER_IMAGE:-rancher/rancher}"
+  local agent_image="${image%/*}/rancher-agent"
+  local tag="$RANCHER_IMAGE_TAG_RESOLVED"
+  log_info "rancher chart $RANCHER_CHART_VERSION (image ${image}:${tag})"
+  local args=(
+    upgrade --install rancher "${RANCHER_REPO}/rancher"
+    --devel --version "$RANCHER_CHART_VERSION"
+    --namespace cattle-system --create-namespace
+    --set "hostname=${host}"
+    --set "replicas=1"
+    --set "rancherImage=${image}"
+    --set "rancherImageTag=${tag}"
+    --set "rancherImagePullPolicy=Always"
+    --set "bootstrapPassword=${RANCHER_PASSWORD:-password1234}"
+    --set "ingress.ingressClassName=traefik"
+    --set "extraEnv[0].name=CATTLE_AGENT_IMAGE"
+    --set-string "extraEnv[0].value=${agent_image}:${tag}"
+  )
+  helm --kubeconfig "$kc" "${args[@]}"
+}

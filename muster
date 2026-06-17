@@ -147,6 +147,8 @@ esac
 export INSTANCE EXTERNAL RANCHER_REPO RANCHER_IMAGE_TAG OUT
 
 load_core() {
+  # shellcheck source=lib/download.sh
+  . "$MUSTER_HOME/lib/download.sh"
   # shellcheck source=lib/helm.sh
   . "$MUSTER_HOME/lib/helm.sh"
   # shellcheck source=lib/gates.sh

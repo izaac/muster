@@ -26,7 +26,6 @@ k3d_index() {
 k3d_network() { echo "k3d-${INSTANCE}"; }
 k3d_https_port() { echo $(($(k3d_index) + 8443)); }
 k3d_http_port() { echo $(($(k3d_index) + 8080)); }
-k3d_api_port() { echo $(($(k3d_index) + 6443)); }
 
 # in_container - true when muster itself runs inside a container. Containerised
 # runs drive the host Docker daemon and create sibling k3d containers, so the
@@ -34,7 +33,18 @@ k3d_api_port() { echo $(($(k3d_index) + 6443)); }
 in_container() { [ -f /.dockerenv ]; }
 
 driver_kubeconfig() {
-  k3d kubeconfig write "$INSTANCE" 2>/dev/null
+  local kc
+  kc="$(k3d kubeconfig write "$INSTANCE" 2>/dev/null)"
+  # Inside a container the kubeconfig's 0.0.0.0/127.0.0.1 server address points
+  # at the container itself. Rewrite it to the host gateway so kubectl reaches
+  # the API published on the host (the matching TLS SAN is added at create time).
+  if in_container; then
+    sed -i \
+      -e 's#https://0\.0\.0\.0:#https://host.docker.internal:#' \
+      -e 's#https://127\.0\.0\.1:#https://host.docker.internal:#' \
+      "$kc"
+  fi
+  printf '%s' "$kc"
 }
 
 # k3d_kc <kubectl args...> - run kubectl against this instance's kubeconfig.
@@ -49,7 +59,15 @@ k3d_lb_ip() {
 }
 
 driver_endpoint() {
-  printf '%s.sslip.io' "$(k3d_lb_ip)"
+  if [ -n "${EXTERNAL_HOSTNAME:-}" ]; then
+    printf '%s' "$EXTERNAL_HOSTNAME"
+  else
+    printf '%s.sslip.io' "$(k3d_lb_ip)"
+  fi
+}
+
+driver_tunnel_port() {
+  k3d_https_port
 }
 
 driver_up() {
@@ -70,11 +88,12 @@ driver_up() {
     -p "$(k3d_http_port):80@loadbalancer"
     --wait --timeout 180s
   )
-  # Containerised muster reaches the API through the host gateway: k3d binds the
-  # API on the host and writes host.docker.internal into the kubeconfig (and its
-  # TLS SANs), which resolves from inside the container on every platform.
+  # Containerised muster reaches the API through the host gateway. k3d keeps its
+  # default API bind (binding to host.docker.internal is not possible on Docker
+  # Desktop), but we add host.docker.internal as a TLS SAN so the kubeconfig can
+  # be rewritten to that address (see driver_kubeconfig) with a valid cert.
   if in_container; then
-    create_args+=(--api-port "host.docker.internal:$(k3d_api_port)")
+    create_args+=(--k3s-arg "--tls-san=host.docker.internal@server:*")
   fi
   if [ -n "${DASHBOARD_DIST:-}" ]; then
     [ -d "$DASHBOARD_DIST" ] || die "--dashboard-dist '$DASHBOARD_DIST' is not a directory"

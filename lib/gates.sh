@@ -21,6 +21,10 @@ gates_wait() {
   log_info "waiting: rancher deployment rollout"
   kubectl --kubeconfig "$kc" -n cattle-system rollout status deploy/rancher --timeout=600s
 
+  if is_true "${EXTERNAL:-}"; then
+    external_apply "$kc" "$host"
+  fi
+
   log_info "waiting: dashboard responds 200"
   retry 20 5 "dashboard HTTP 200" -- \
     sh -c "curl -skI --max-time 5 'https://${host}/dashboard/' | head -1 | grep -q ' 200'"
@@ -46,6 +50,10 @@ gates_wait() {
   if declare -F driver_settle >/dev/null; then
     log_info "waiting: substrate to settle"
     driver_settle || log_warn "substrate did not settle in time - proceeding anyway"
+  fi
+
+  if is_true "${EXTERNAL:-}"; then
+    warmup_provisioning "$kc"
   fi
 
   log_ok "rancher ready: https://${host}/dashboard"

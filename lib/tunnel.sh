@@ -124,12 +124,19 @@ tunnel_up() {
   pidfile="/tmp/muster-tunnel-${INSTANCE}.pid"
   : >"$log"
 
+  # macOS lacks setsid and its networking stack often drops QUIC (UDP) tunnels,
+  # causing Error 1033. Force http2 (TCP) on Darwin and use 127.0.0.1 to avoid
+  # IPv6 resolution of localhost.
+  local cf_args=(tunnel --url "https://127.0.0.1:${port}" --no-tls-verify)
+  if [ "$(uname -s)" = "Darwin" ]; then
+    cf_args+=(--protocol http2)
+  fi
+
   if command -v setsid >/dev/null 2>&1; then
-    setsid "$cf" tunnel --url "https://localhost:${port}" --no-tls-verify \
-      >>"$log" 2>&1 </dev/null &
+    setsid "$cf" "${cf_args[@]}" >>"$log" 2>&1 </dev/null &
   else
-    nohup "$cf" tunnel --url "https://localhost:${port}" --no-tls-verify \
-      >>"$log" 2>&1 </dev/null &
+    nohup "$cf" "${cf_args[@]}" >>"$log" 2>&1 </dev/null &
+    disown
   fi
   echo "$!" >"$pidfile"
 

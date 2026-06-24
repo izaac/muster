@@ -56,8 +56,17 @@ yarn cypress run
 ```
 
 The `cypress` handoff emits `TEST_BASE_URL`, `TEST_USERNAME`,
-`CATTLE_BOOTSTRAP_PASSWORD`, `TEST_PASSWORD`, and `API` — the same env vars
+`CATTLE_BOOTSTRAP_PASSWORD`, `TEST_PASSWORD`, and `API`: the same env vars
 `rancher/dashboard` Cypress expects in `cypress/base-config.ts`.
+
+For a fully containerized runner (no host Node/Cypress install), see
+[`examples/cypress-upstream/`](examples/cypress-upstream/), which builds
+Chrome on Linux and Chromium on macOS.
+
+The upstream Cypress example targets GitHub Actions parity on Linux with Google
+Chrome. macOS local Docker Desktop uses Chromium. Override with
+`CYPRESS_BROWSER=chrome` or `CYPRESS_BROWSER=chromium`, then rebuild the
+example image.
 
 ### Playwright (izaac/dashboard-e2e-pw)
 
@@ -74,9 +83,12 @@ yarn playwright test
 The `env` handoff emits `TEST_BASE_URL`, `RANCHER_HOSTNAME`, `KUBECONFIG`,
 and `TEST_PASSWORD`.
 
+For a fully containerized runner, see [`examples/playwright/`](examples/playwright/),
+which builds a self-contained image and bind-mounts your suite checkout.
+
 ### With a custom dashboard build
 
-Combine both — build your UI branch and run tests against it:
+Combine both, build your UI branch and run tests against it:
 
 ```sh
 muster build-ui --dashboard-src ~/repos/dashboard --dashboard-branch my-feature
@@ -95,8 +107,8 @@ cd ~/repos/dashboard && yarn cypress run
 ## Development
 
 ```sh
-shellcheck -x -s bash muster lib/*.sh drivers/*.sh
-shfmt -d -i 2 -ci -bn muster lib drivers
+shellcheck -x -s bash muster lib/*.sh drivers/*.sh docker/*.sh examples/*/*.sh
+shfmt -d -i 2 -ci -bn muster lib drivers docker/*.sh examples/*/*.sh
 bats test/
 git config core.hooksPath hooks   # enable pre-commit/pre-push checks
 ```

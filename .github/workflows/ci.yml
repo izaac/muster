@@ -22,10 +22,10 @@ jobs:
           sudo apt-get install -y bats shellcheck
 
       - name: shellcheck
-        run: shellcheck -x -s bash muster lib/*.sh drivers/*.sh docker/*.sh
+        run: shellcheck -x -s bash muster lib/*.sh drivers/*.sh docker/*.sh examples/*/*.sh
 
       - name: shfmt (diff)
-        run: shfmt -d -i 2 -ci -bn muster lib drivers docker/*.sh
+        run: shfmt -d -i 2 -ci -bn muster lib drivers docker/*.sh examples/*/*.sh
 
       - name: bats
         run: bats test/

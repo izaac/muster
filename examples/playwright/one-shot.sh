@@ -31,10 +31,12 @@ esac
 
 eval "$("$MUSTER" env --provider "$PROVIDER" --instance "$INSTANCE" --out cypress)"
 export TEST_BASE_URL CATTLE_BOOTSTRAP_PASSWORD TEST_PASSWORD TEST_USERNAME
-HOST_UID="$(id -u)"; export HOST_UID
-HOST_GID="$(id -g)"; export HOST_GID
+HOST_UID="$(id -u)"
+export HOST_UID
+HOST_GID="$(id -g)"
+export HOST_GID
 
 mkdir -p "$PW_REPO_PATH/test-results" "$PW_REPO_PATH/playwright-report"
 
 echo "--- Running Playwright (GREP_TAGS=$GREP_TAGS) ---"
-docker compose -f "$SCRIPT_DIR/docker-compose.yml" run --rm tests "$@"
+docker compose -f "$SCRIPT_DIR/docker-compose.yml" run --rm tests playwright-run "$@"

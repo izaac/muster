@@ -8,22 +8,29 @@
 #
 # Or use the wrapper script: examples/cypress-upstream/run.sh
 #
-# On Apple Silicon, uses native arm64 Chromium (no Rosetta/emulation needed).
+# Browser defaults:
+#   Linux / GitHub Actions parity: Google Chrome
+#   macOS local Docker Desktop: Chromium
+# Manual compose users may set CYPRESS_BROWSER=chrome|chromium|auto and rebuild.
 
 services:
   cypress-setup:
-    build: .
+    build:
+      context: .
+      args:
+        CYPRESS_BROWSER: ${CYPRESS_BROWSER:-auto}
     networks:
       k3d-e2e:
     shm_size: "2g"
     entrypoint: ["/opt/entrypoint.sh"]
-    command: ["npx", "cypress", "run", "--browser", "chromium"]
+    command: ["cypress-run"]
     environment:
       TEST_BASE_URL: ${TEST_BASE_URL:?muster env not sourced}
       CATTLE_BOOTSTRAP_PASSWORD: ${CATTLE_BOOTSTRAP_PASSWORD:-password1234}
       TEST_PASSWORD: ${TEST_PASSWORD:-password1234}
       TEST_USERNAME: ${TEST_USERNAME:-admin}
       API: ${API:-}
+      CYPRESS_BROWSER: ${CYPRESS_BROWSER:-auto}
       CYPRESS_grepTags: ${GREP_TAGS:-}
       TEST_ONLY: setup
       NODE_TLS_REJECT_UNAUTHORIZED: "0"
@@ -36,18 +43,22 @@ services:
       - /tmp
 
   cypress:
-    build: .
+    build:
+      context: .
+      args:
+        CYPRESS_BROWSER: ${CYPRESS_BROWSER:-auto}
     networks:
       k3d-e2e:
     shm_size: "2g"
     entrypoint: ["/opt/entrypoint.sh"]
-    command: ["npx", "cypress", "run", "--browser", "chromium"]
+    command: ["cypress-run"]
     environment:
       TEST_BASE_URL: ${TEST_BASE_URL:?muster env not sourced}
       CATTLE_BOOTSTRAP_PASSWORD: ${CATTLE_BOOTSTRAP_PASSWORD:-password1234}
       TEST_PASSWORD: ${TEST_PASSWORD:-password1234}
       TEST_USERNAME: ${TEST_USERNAME:-admin}
       API: ${API:-}
+      CYPRESS_BROWSER: ${CYPRESS_BROWSER:-auto}
       CYPRESS_grepTags: ${GREP_TAGS:-}
       TEST_SKIP: setup
       NODE_TLS_REJECT_UNAUTHORIZED: "0"

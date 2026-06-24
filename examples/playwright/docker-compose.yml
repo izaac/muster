@@ -1,19 +1,27 @@
-# Run izaac/dashboard-e2e-pw Playwright suite against a muster-provisioned
-# Rancher. Expects muster to be running and the k3d-e2e network to exist.
+# Run the rancher dashboard-e2e-pw Playwright suite against a muster-provisioned
+# Rancher. Expects muster to be running with the k3d-e2e network present.
+#
+# Self-contained: the image is built from this directory's Dockerfile and the
+# test sources are bind-mounted from PW_REPO_PATH, so nothing is built out of the
+# external checkout. The Playwright base image bundles Chromium for amd64 and
+# arm64, so no host-specific browser selection is needed.
 #
 # Usage:
 #   eval "$(muster env)"
-#   docker compose -f examples/playwright/docker-compose.yml run --rm tests
+#   PW_REPO_PATH=~/repos/dashboard-e2e-pw \
+#     docker compose -f examples/playwright/docker-compose.yml run --rm tests playwright-run
 #
 # Or use the wrapper script: examples/playwright/run.sh
 
 services:
   tests:
     build:
-      context: ${PW_REPO_PATH:?set PW_REPO_PATH to dashboard-e2e-pw checkout}
-      dockerfile: Dockerfile
+      context: .
     networks:
       k3d-e2e:
+    shm_size: "2g"
+    entrypoint: ["/opt/entrypoint.sh"]
+    command: ["playwright-run"]
     environment:
       TEST_BASE_URL: ${TEST_BASE_URL:?muster env not sourced}
       CATTLE_BOOTSTRAP_PASSWORD: ${CATTLE_BOOTSTRAP_PASSWORD:-password1234}
@@ -23,13 +31,16 @@ services:
       NODE_TLS_REJECT_UNAUTHORIZED: "0"
       TEST_NO_VIDEOS: ${TEST_NO_VIDEOS:-}
       TEST_NO_TRACES: ${TEST_NO_TRACES:-}
-    user: "${HOST_UID:-1000}:${HOST_GID:-100}"
-    command: ["sh", "-c", "npx playwright test --reporter=line"]
+    working_dir: /app
     volumes:
-      - ${PW_REPO_PATH}:/app
-      - /app/node_modules
-      - ${PW_REPO_PATH}/test-results:/app/test-results
-      - ${PW_REPO_PATH}/playwright-report:/app/playwright-report
+      - ${PW_REPO_PATH:?set PW_REPO_PATH to dashboard-e2e-pw checkout}:/app
+      - pw-node-modules:/app/node_modules
+      - ./entrypoint.sh:/opt/entrypoint.sh:ro
+    tmpfs:
+      - /tmp
+
+volumes:
+  pw-node-modules:
 
 networks:
   k3d-e2e:

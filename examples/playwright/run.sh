@@ -49,4 +49,4 @@ echo "    TEST_BASE_URL=$TEST_BASE_URL"
 # Ensure output dirs exist with correct ownership.
 mkdir -p "$PW_REPO_PATH/test-results" "$PW_REPO_PATH/playwright-report"
 
-docker compose -f "$SCRIPT_DIR/docker-compose.yml" run --rm tests "$@"
+docker compose -f "$SCRIPT_DIR/docker-compose.yml" run --rm tests playwright-run "$@"

@@ -7,10 +7,13 @@
 #   EXTERNAL=true DASHBOARD_SRC=~/repos/dashboard GREP_TAGS='@provisioning' ./run.sh
 #
 # Environment:
-#   DASHBOARD_SRC  (required) Path to a rancher/dashboard checkout with
-#                  node_modules installed (yarn install).
+#   DASHBOARD_SRC  (required) Path to a rancher/dashboard checkout. Run
+#                  one-shot.sh or `muster build-ui` first so dist exists.
+#                  Test dependencies install into a named docker volume.
 #   GREP_TAGS      Cypress grep tag filter (e.g. @navigation, @generic).
 #   EXTERNAL       Set to true for cloudflared tunnel (provisioning tests).
+#   CYPRESS_BROWSER Browser for the runner. Default: chrome on Linux (GitHub
+#                  Actions parity), chromium on macOS local Docker Desktop.
 #   PROVIDER       muster provider (default: k3d).
 #   INSTANCE       muster instance name (default: e2e).
 
@@ -24,7 +27,19 @@ MUSTER="$MUSTER_ROOT/muster"
 : "${PROVIDER:=k3d}"
 : "${INSTANCE:=e2e}"
 
-export DASHBOARD_SRC PROVIDER INSTANCE
+default_cypress_browser() {
+  case "$(uname -s)" in
+    Darwin) echo chromium ;;
+    Linux) echo chrome ;;
+    *) echo auto ;;
+  esac
+}
+
+if [ -z "${CYPRESS_BROWSER:-}" ]; then
+  CYPRESS_BROWSER="$(default_cypress_browser)"
+fi
+
+export DASHBOARD_SRC PROVIDER INSTANCE CYPRESS_BROWSER
 
 # Provision if not already up.
 if ! "$MUSTER" env --provider "$PROVIDER" --instance "$INSTANCE" --out cypress >/dev/null 2>&1; then
@@ -45,7 +60,8 @@ export HOST_GID="${HOST_GID:-$(id -g)}"
 
 echo "--- Running Cypress setup (first-login) ---"
 echo "    TEST_BASE_URL=$TEST_BASE_URL"
+echo "    CYPRESS_BROWSER=$CYPRESS_BROWSER"
 docker compose -f "$SCRIPT_DIR/docker-compose.yml" run --rm cypress-setup
 
 echo "--- Running Cypress (GREP_TAGS=${GREP_TAGS:-<all>}) ---"
-docker compose -f "$SCRIPT_DIR/docker-compose.yml" run --rm cypress "$@"
+docker compose -f "$SCRIPT_DIR/docker-compose.yml" run --rm cypress cypress-run "$@"

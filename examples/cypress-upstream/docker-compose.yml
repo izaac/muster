@@ -1,0 +1,67 @@
+# Run upstream rancher/dashboard Cypress suite against a muster-provisioned
+# Rancher. Expects muster to be running with --out cypress and the k3d-e2e
+# network to exist.
+#
+# Two-pass approach (matches upstream CI):
+#   1. docker compose run --rm cypress-setup   (first-login + EULA)
+#   2. docker compose run --rm cypress         (actual test specs)
+#
+# Or use the wrapper script: examples/cypress-upstream/run.sh
+#
+# On Apple Silicon, uses native arm64 Chromium (no Rosetta/emulation needed).
+
+services:
+  cypress-setup:
+    build: .
+    networks:
+      k3d-e2e:
+    shm_size: "2g"
+    entrypoint: ["/opt/entrypoint.sh"]
+    command: ["npx", "cypress", "run", "--browser", "chromium"]
+    environment:
+      TEST_BASE_URL: ${TEST_BASE_URL:?muster env not sourced}
+      CATTLE_BOOTSTRAP_PASSWORD: ${CATTLE_BOOTSTRAP_PASSWORD:-password1234}
+      TEST_PASSWORD: ${TEST_PASSWORD:-password1234}
+      TEST_USERNAME: ${TEST_USERNAME:-admin}
+      API: ${API:-}
+      CYPRESS_grepTags: ${GREP_TAGS:-}
+      TEST_ONLY: setup
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+    working_dir: /e2e
+    volumes:
+      - ${DASHBOARD_SRC:?set DASHBOARD_SRC to rancher/dashboard checkout}:/e2e
+      - cypress-node-modules:/e2e/node_modules
+      - ./entrypoint.sh:/opt/entrypoint.sh:ro
+    tmpfs:
+      - /tmp
+
+  cypress:
+    build: .
+    networks:
+      k3d-e2e:
+    shm_size: "2g"
+    entrypoint: ["/opt/entrypoint.sh"]
+    command: ["npx", "cypress", "run", "--browser", "chromium"]
+    environment:
+      TEST_BASE_URL: ${TEST_BASE_URL:?muster env not sourced}
+      CATTLE_BOOTSTRAP_PASSWORD: ${CATTLE_BOOTSTRAP_PASSWORD:-password1234}
+      TEST_PASSWORD: ${TEST_PASSWORD:-password1234}
+      TEST_USERNAME: ${TEST_USERNAME:-admin}
+      API: ${API:-}
+      CYPRESS_grepTags: ${GREP_TAGS:-}
+      TEST_SKIP: setup
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+    working_dir: /e2e
+    volumes:
+      - ${DASHBOARD_SRC:?set DASHBOARD_SRC to rancher/dashboard checkout}:/e2e
+      - cypress-node-modules:/e2e/node_modules
+      - ./entrypoint.sh:/opt/entrypoint.sh:ro
+    tmpfs:
+      - /tmp
+
+volumes:
+  cypress-node-modules:
+
+networks:
+  k3d-e2e:
+    external: true

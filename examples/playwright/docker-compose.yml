@@ -1,0 +1,36 @@
+# Run izaac/dashboard-e2e-pw Playwright suite against a muster-provisioned
+# Rancher. Expects muster to be running and the k3d-e2e network to exist.
+#
+# Usage:
+#   eval "$(muster env)"
+#   docker compose -f examples/playwright/docker-compose.yml run --rm tests
+#
+# Or use the wrapper script: examples/playwright/run.sh
+
+services:
+  tests:
+    build:
+      context: ${PW_REPO_PATH:?set PW_REPO_PATH to dashboard-e2e-pw checkout}
+      dockerfile: Dockerfile
+    networks:
+      k3d-e2e:
+    environment:
+      TEST_BASE_URL: ${TEST_BASE_URL:?muster env not sourced}
+      CATTLE_BOOTSTRAP_PASSWORD: ${CATTLE_BOOTSTRAP_PASSWORD:-password1234}
+      TEST_PASSWORD: ${TEST_PASSWORD:-password1234}
+      TEST_USERNAME: ${TEST_USERNAME:-admin}
+      GREP_TAGS: ${GREP_TAGS:-}
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      TEST_NO_VIDEOS: ${TEST_NO_VIDEOS:-}
+      TEST_NO_TRACES: ${TEST_NO_TRACES:-}
+    user: "${HOST_UID:-1000}:${HOST_GID:-100}"
+    command: ["sh", "-c", "npx playwright test --reporter=line"]
+    volumes:
+      - ${PW_REPO_PATH}:/app
+      - /app/node_modules
+      - ${PW_REPO_PATH}/test-results:/app/test-results
+      - ${PW_REPO_PATH}/playwright-report:/app/playwright-report
+
+networks:
+  k3d-e2e:
+    external: true

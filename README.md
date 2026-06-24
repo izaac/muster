@@ -102,6 +102,8 @@ cd ~/repos/dashboard && yarn cypress run
 - `bash` 4+, `docker`
 - k3d provider: `k3d`, `helm`, `kubectl`
 - docker provider: just `docker` (community channels); `helm` for staging/prime
+- `build-ui`: Node 24+ and `yarn` (classic) on the host, or run it inside the
+  dashboard checkout's dev shell
 - External mode auto-fetches a pinned `cloudflared`
 
 ## Development

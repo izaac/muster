@@ -66,6 +66,18 @@ driver_endpoint() {
   fi
 }
 
+# driver_curl_url - the base URL gates should curl to reach the ingress.
+# On Linux the bridge IP is routable, so use the sslip hostname directly.
+# On macOS (Docker Desktop) the bridge lives in a VM and is unreachable from
+# the host; curl must go through the port-mapped localhost with a Host header.
+driver_curl_url() {
+  if in_container || [ "$(uname -s)" = "Linux" ]; then
+    printf 'https://%s' "$(driver_endpoint)"
+  else
+    printf 'https://127.0.0.1:%s' "$(k3d_https_port)"
+  fi
+}
+
 driver_tunnel_port() {
   k3d_https_port
 }

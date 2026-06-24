@@ -35,8 +35,14 @@ gates_wait() {
     fi
 
     log_info "waiting: dashboard responds 200"
+    local curl_url="https://${host}"
+    local curl_host_flag=""
+    if declare -F driver_curl_url >/dev/null; then
+      curl_url="$(driver_curl_url)"
+      [ "$curl_url" != "https://${host}" ] && curl_host_flag="-H 'Host: ${host}'"
+    fi
     retry 20 5 "dashboard HTTP 200" -- \
-      sh -c "curl -skI --max-time 5 'https://${host}/dashboard/' | head -1 | grep -q ' 200'"
+      bash -c "curl -skI --max-time 5 $curl_host_flag '${curl_url}/dashboard/' | head -1 | grep -q ' 200'"
 
     # 90 attempts (15 min) covers cold CI runners where CRD apply + webhook chart
     # install saturate the node and gate timing varies run-to-run. Locally ~90s.
@@ -54,7 +60,7 @@ gates_wait() {
     # Deeper than the dashboard page: proves the auth provider API is serving.
     log_info "waiting: /v3-public/authProviders/local responds 200"
     retry 20 5 "authProviders API 200" -- \
-      sh -c "curl -sk --max-time 5 -o /dev/null -w '%{http_code}' 'https://${host}/v3-public/authProviders/local' | grep -q 200"
+      bash -c "curl -sk --max-time 5 -o /dev/null -w '%{http_code}' $curl_host_flag '${curl_url}/v3-public/authProviders/local' | grep -q 200"
   fi
 
   if declare -F driver_settle >/dev/null; then

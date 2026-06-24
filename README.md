@@ -131,8 +131,12 @@ cd ~/repos/dashboard && yarn cypress run
 - `bash` 4+, `docker`
 - k3d provider: `k3d`, `helm`, `kubectl`
 - docker provider: just `docker` (community channels); `helm` for staging/prime
-- `build-ui`: Node 24+ and `yarn` (classic) on the host, or run it inside the
-  dashboard checkout's dev shell
+- `build-ui`: nothing extra in the common case. muster reads the Node version
+  the dashboard branch pins (`.nvmrc`, falling back to `engines.node`) and, when
+  the host Node is a different major, downloads a checksum-verified Node plus a
+  matching `yarn` into its cache and builds with those. So `master` builds on
+  Node 24 and `release-2.14` on Node 20 with no host setup. A host `node` of the
+  right major is reused as-is; `--node-bin <dir>` forces a specific toolchain.
 - External mode auto-fetches a pinned `cloudflared`
 
 ## Development

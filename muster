@@ -56,6 +56,8 @@ Flags:
                                     it from --version (head->master, vX.Y->release-X.Y).
   --dashboard-dist <path>           Prebuilt UI dist to mount over the pod UI (up),
                                     or where build-ui writes (default: <src>/dist).
+  --node-bin <dir>                  Node bin dir to use for build-ui (escape hatch);
+                                    default auto-selects Node from the branch.
   --config <path>                   Config file to source (default: ./config.sh).
   -h, --help                        Show this help.
 
@@ -80,6 +82,7 @@ OUT="env"
 DASHBOARD_SRC="${DASHBOARD_SRC:-}"
 DASHBOARD_DIST="${DASHBOARD_DIST:-}"
 DASHBOARD_BRANCH="${DASHBOARD_BRANCH:-}"
+NODE_BIN="${NODE_BIN:-}"
 CONFIG=""
 
 CMD="${1:-help}"
@@ -139,6 +142,10 @@ while [ $# -gt 0 ]; do
       DASHBOARD_BRANCH="${2:?--dashboard-branch needs a value}"
       shift 2
       ;;
+    --node-bin)
+      NODE_BIN="${2:?--node-bin needs a value}"
+      shift 2
+      ;;
     --config)
       shift 2
       ;;
@@ -169,7 +176,7 @@ case "$RANCHER_REPO" in
 esac
 
 export INSTANCE EXTERNAL RANCHER_REPO RANCHER_IMAGE_TAG OUT RANCHER_PASSWORD
-export DASHBOARD_SRC DASHBOARD_DIST DASHBOARD_BRANCH
+export DASHBOARD_SRC DASHBOARD_DIST DASHBOARD_BRANCH NODE_BIN
 
 load_core() {
   # shellcheck source=lib/download.sh
@@ -188,6 +195,8 @@ load_core() {
   . "$MUSTER_HOME/lib/handoff.sh"
   # shellcheck source=lib/buildui.sh
   . "$MUSTER_HOME/lib/buildui.sh"
+  # shellcheck source=lib/node.sh
+  . "$MUSTER_HOME/lib/node.sh"
   # shellcheck source=/dev/null
   . "$MUSTER_HOME/drivers/${PROVIDER}.sh"
 }
@@ -257,6 +266,7 @@ out=$OUT
 dashboard_src=${DASHBOARD_SRC:-<none>}
 dashboard_branch=${DASHBOARD_BRANCH:-<derived>}
 dashboard_dist=${DASHBOARD_DIST:-<none>}
+node_bin=${NODE_BIN:-<auto>}
 config=${CONFIG:-<none>}
 EOF
     ;;

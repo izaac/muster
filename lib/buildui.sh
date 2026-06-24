@@ -109,7 +109,6 @@ buildui_run() {
   [ -d "$src/.git" ] || die "--dashboard-src '$src' is not a git checkout"
   [ -f "$src/scripts/version" ] || die "'$src' has no scripts/version (not rancher/dashboard?)"
   require_cmd git
-  require_cmd yarn "run muster via its container image, or install yarn"
 
   local branch dist cur
   branch="$(ui_resolve_branch "$src" "$RANCHER_IMAGE_TAG" "${DASHBOARD_BRANCH:-}")"
@@ -127,22 +126,35 @@ buildui_run() {
     log_info "build-ui: already on dashboard branch '$branch'"
   fi
 
-  ui_node_gate "$src"
+  # Pick the Node the branch declares (.nvmrc/engines), provisioning one (with a
+  # matching yarn) into the muster cache if the host Node is the wrong major.
+  # ui_node_gate stays as a clear last-line check on whatever Node ends up
+  # active; yarn is required only after this resolution since a provisioned
+  # toolchain supplies it.
+  local node_bin path_prefix=""
+  node_bin="$(ui_resolve_node "$src")"
+  [ -n "$node_bin" ] && path_prefix="${node_bin}:"
+
+  PATH="${path_prefix}${PATH}" ui_node_gate "$src"
+  PATH="${path_prefix}${PATH}" require_cmd yarn "run muster via its container image, or install yarn"
 
   # Run the dashboard production build directly rather than scripts/build-e2e:
   # build-e2e additionally pulls the legacy ember UI (rancher/ui) from a CDN,
   # which is network-fragile and is not part of the dashboard dist we mount.
   # A fresh bash avoids inheriting muster's `set -u` (scripts/version reads
-  # unset vars) and sidesteps the script's /bin/bash shebang under devenv.
+  # unset vars) and sidesteps the script's /bin/bash shebang when the build
+  # runs under a non-default shell. The resolved Node bin dir leads PATH so the
+  # build (and the yarn it shells out to) runs under the intended toolchain.
   log_info "building dashboard dist -> $dist"
   bash -e -c '
+    export PATH="$3$PATH"
     cd "$1"
     yarn install --frozen-lockfile
     # shellcheck disable=SC1091
     source scripts/version
     COMMIT="$COMMIT" VERSION="$VERSION" OUTPUT_DIR="$2" \
       ROUTER_BASE=/dashboard/ RESOURCE_BASE=/dashboard/ yarn run build
-  ' _ "$src" "$dist"
+  ' _ "$src" "$dist" "$path_prefix"
 
   [ -f "$dist/index.html" ] || die "build produced no index.html in '$dist'"
   log_ok "dashboard dist ready: $dist"

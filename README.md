@@ -4,6 +4,20 @@ Wrangle a Rancher management cluster for E2E testing. Brings up Rancher
 (k3d helm chart or standalone docker container), waits for readiness, and
 hands off to Cypress, Playwright, or a human at a browser.
 
+## Install
+
+```sh
+git clone https://github.com/izaac/muster && cd muster
+./install.sh          # per-user: ~/.local/share/muster + ~/.local/bin/muster
+```
+
+Works on Linux and macOS with no extra tooling (it is bash all the way down).
+The script copies the tree into a library directory and symlinks the `muster`
+entrypoint onto your PATH, so **upgrading is just `git pull && ./install.sh`**.
+For a system-wide install use `PREFIX=/usr/local ./install.sh` (may need
+`sudo`); remove everything with `./install.sh --uninstall`. Shell completions
+are installed automatically (see [Shell completion](#shell-completion)).
+
 ## Quick start
 
 ```sh

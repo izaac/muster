@@ -157,6 +157,20 @@ bats test/
 git config core.hooksPath hooks   # enable pre-commit/pre-push checks
 ```
 
+## Shell completion
+
+Tab-completion for commands, flags, and known values (providers, channels,
+handoff formats) ships in `completions/`.
+
+```sh
+# bash: source it from ~/.bashrc, or install into a bash-completion dir
+cp completions/muster.bash ~/.local/share/bash-completion/completions/muster
+
+# zsh: put it on your $fpath as _muster, then rebuild the completion cache
+mkdir -p ~/.zfunc && cp completions/_muster ~/.zfunc/_muster
+echo 'fpath=(~/.zfunc $fpath); autoload -U compinit && compinit' >> ~/.zshrc
+```
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).

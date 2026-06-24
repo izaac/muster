@@ -1,0 +1,46 @@
+#compdef muster
+# Zsh completion for muster. Install by putting this file (named _muster) in a
+# directory on your $fpath, e.g.:
+#   mkdir -p ~/.zfunc && cp completions/_muster ~/.zfunc/_muster
+#   echo 'fpath=(~/.zfunc $fpath); autoload -U compinit && compinit' >> ~/.zshrc
+
+_muster() {
+  local -a commands
+  commands=(
+    'up:Create/ensure a cluster and install Rancher, then wait + hand off'
+    'build-ui:Build a dashboard UI dist from the branch matching --version'
+    'wait:Run readiness gates against an existing instance'
+    'tunnel:Manage the cloudflared quick tunnel'
+    'warmup:Prime the provisioning controller'
+    'down:Tear down the cluster and sweep state'
+    'env:Print the consumer handoff'
+    'show:Print the resolved configuration'
+    'version:Print the muster version'
+    'help:Show help'
+  )
+
+  _arguments -C \
+    '--provider[Substrate driver]:provider:(k3d existing docker)' \
+    '--instance[Instance id]:instance:' \
+    '--external[Expose Rancher via a public tunnel]' \
+    '--version[Rancher image tag]:tag:' \
+    '--repo[Rancher channel]:channel:(rancher-prime rancher-latest rancher-alpha rancher-community rancher-com-rc rancher-com-alpha)' \
+    '--password[Rancher bootstrap/admin password]:password:' \
+    '--out[Handoff format]:format:(env cypress json)' \
+    '--dashboard-src[rancher/dashboard checkout]:dir:_files -/' \
+    '--dashboard-dist[prebuilt UI dist]:dir:_files -/' \
+    '--dashboard-branch[Force the UI branch]:branch:' \
+    '--node-bin[Node bin dir for build-ui]:dir:_files -/' \
+    '--kubeconfig[Kubeconfig for the target cluster]:file:_files' \
+    '--rancher-host[Hostname Rancher is served at]:host:' \
+    '--config[Config file to source]:file:_files' \
+    '(-h --help)'{-h,--help}'[Show help]' \
+    '1:command:->command' \
+    '*::arg:->args'
+
+  case "$state" in
+    command) _describe -t commands 'muster command' commands ;;
+  esac
+}
+
+_muster "$@"

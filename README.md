@@ -15,6 +15,35 @@ muster down                                 # tear down everything
 
 Copy `config.sh.example` → `config.sh` for defaults; flags override.
 
+## Choosing a Rancher channel and version
+
+`--repo` selects the helm channel and image registry; `--version` selects the
+chart/image tag (`head` or a concrete version like `2.13` / `2.13.4-rc1`):
+
+```sh
+# Latest RC of the 2.13 line from the staging channel
+muster up --provider k3d --repo rancher-latest --version 2.13
+
+# A specific prime release (gated registry; needs pull creds out of band)
+muster up --provider k3d --repo rancher-prime --version 2.13.4
+
+# Rolling head from the community channel (default)
+muster up --provider k3d --repo rancher-com-rc --version head
+```
+
+Channels: `rancher-prime`, `rancher-latest`, `rancher-alpha`,
+`rancher-community`, `rancher-com-rc` (default), `rancher-com-alpha`. The
+alpha/rc staging channels publish freely pullable images and are the happy
+path for testing; prime is gated.
+
+To list the chart/image combinations available for a minor across every
+channel, use
+[list-rancher-versions](https://github.com/izaac/list-rancher-versions):
+
+```sh
+./list-rancher-versions.sh 2.13   # every 2.13.x chart/image combo per channel
+```
+
 ## Building dashboard from a branch
 
 Clone the dashboard repo and use `build-ui` to produce a dist, then mount it

@@ -5,6 +5,14 @@
 # Usage:
 #   PW_REPO_PATH=~/repos/dashboard-e2e-pw ./one-shot.sh @navigation
 #   EXTERNAL=true PW_REPO_PATH=~/repos/dashboard-e2e-pw ./one-shot.sh @provisioning
+#   VERSION=2.13 REPO=rancher-latest PW_REPO_PATH=~/repos/dashboard-e2e-pw ./one-shot.sh @navigation
+#
+# Environment (besides PW_REPO_PATH):
+#   REPO     Rancher channel for `muster up` (e.g. rancher-com-rc,
+#            rancher-latest, rancher-alpha, rancher-prime).
+#   VERSION  Rancher image/chart tag for `muster up` (e.g. head, 2.13,
+#            2.13.4-rc1). Default: the muster default (head).
+#   EXTERNAL Set to true for a cloudflared tunnel (provisioning tests).
 #
 # To keep the cluster for repeated runs, use run.sh instead.
 
@@ -23,6 +31,8 @@ export PW_REPO_PATH GREP_TAGS PROVIDER INSTANCE
 trap '"$MUSTER" down --provider "$PROVIDER" --instance "$INSTANCE"' EXIT
 
 up_args=(--provider "$PROVIDER" --instance "$INSTANCE" --out cypress)
+[ -n "${REPO:-}" ] && up_args+=(--repo "$REPO")
+[ -n "${VERSION:-}" ] && up_args+=(--version "$VERSION")
 case "$(printf '%s' "${EXTERNAL:-}" | tr '[:upper:]' '[:lower:]')" in
   1 | true | yes | on) up_args+=(--external) ;;
 esac

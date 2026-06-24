@@ -34,3 +34,15 @@ Chrome on Linux (GitHub Actions parity), Chromium on macOS. Override with
 - `EXTERNAL`: `true` provisions a cloudflared tunnel.
 - `FRESH`: `true` tears down and reprovisions so a freshly built dist is
   mounted (a reused cluster keeps its old dist).
+- `REPO`: Rancher channel for `muster up` (`rancher-com-rc`, `rancher-latest`,
+  `rancher-alpha`, `rancher-prime`, ...).
+- `VERSION`: Rancher image/chart tag and dashboard build version (`head`,
+  `2.13`, `2.13.4-rc1`). Defaults to `head`.
+- `DASHBOARD_BRANCH` (one-shot): force the dashboard branch for `build-ui`.
+
+To discover valid `REPO` / `VERSION` pairs for a minor, use
+[list-rancher-versions](https://github.com/izaac/list-rancher-versions):
+
+```sh
+./list-rancher-versions.sh 2.13   # chart/image combos per channel
+```

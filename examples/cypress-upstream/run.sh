@@ -14,6 +14,11 @@
 #   EXTERNAL       Set to true for cloudflared tunnel (provisioning tests).
 #   FRESH          Set to true to tear down and reprovision first, so a freshly
 #                  built dist is mounted (a reused cluster keeps its old dist).
+#   REPO           Rancher channel for `muster up` (e.g. rancher-com-rc,
+#                  rancher-latest, rancher-alpha, rancher-prime). Default: the
+#                  muster default (rancher-com-rc).
+#   VERSION        Rancher image/chart tag for `muster up` (e.g. head, 2.13,
+#                  2.13.4-rc1). Default: the muster default (head).
 #   CYPRESS_BROWSER Browser for the runner. Default: chrome on Linux (GitHub
 #                  Actions parity), chromium on macOS local Docker Desktop.
 #   PROVIDER       muster provider (default: k3d).
@@ -63,6 +68,8 @@ if ! "$MUSTER" env --provider "$PROVIDER" --instance "$INSTANCE" --out cypress >
   echo "--- Provisioning Rancher ($PROVIDER/$INSTANCE) ---"
   up_args=(--provider "$PROVIDER" --instance "$INSTANCE"
     --dashboard-dist "$DASHBOARD_SRC/dist" --out cypress)
+  [ -n "${REPO:-}" ] && up_args+=(--repo "$REPO")
+  [ -n "${VERSION:-}" ] && up_args+=(--version "$VERSION")
   is_truthy "${EXTERNAL:-}" && up_args+=(--external)
   "$MUSTER" up "${up_args[@]}"
 else

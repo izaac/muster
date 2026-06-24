@@ -64,7 +64,9 @@ case "${1:-}" in
   *) die "unknown argument: $1 (try --help)" ;;
 esac
 
-[ -f "$SRC/muster" ] && [ -d "$SRC/lib" ] || die "run this from a muster checkout (missing muster/ lib/)"
+if [ ! -f "$SRC/muster" ] || [ ! -d "$SRC/lib" ]; then
+  die "run this from a muster checkout (missing muster/ lib/)"
+fi
 
 say "installing muster"
 say "  from: $SRC"

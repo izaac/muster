@@ -18,8 +18,9 @@ EXTERNAL=true DASHBOARD_SRC=~/repos/dashboard ./run.sh
 ```
 
 `run.sh` provisions Rancher if needed, sources the muster handoff, runs the
-first-login/EULA pass, then runs the specs. `one-shot.sh` builds the
-dashboard dist first and tears down on exit.
+first-login/EULA pass, then runs the specs. `one-shot.sh` calls `build-ui`
+first (which auto-provisions the branch's Node toolchain if the host Node
+does not match) and tears down on exit.
 
 ## Browser
 

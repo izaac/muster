@@ -28,10 +28,13 @@ no host-specific browser split.
 ## Environment
 
 - `PW_REPO_PATH` (required): path to a `dashboard-e2e-pw` checkout.
+- `DASHBOARD_SRC`: path to a `rancher/dashboard` checkout; when set, its
+  prebuilt `dist/` is mounted into Rancher (this example never builds a dist).
 - `GREP_TAGS`: grep tag filter (one-shot default `@navigation`).
 - `EXTERNAL`: `true` provisions a cloudflared tunnel.
-- `FRESH`: `true` tears down and reprovisions so a freshly built dist is
-  mounted (a reused cluster keeps its old dist).
+- `FRESH`: `true` tears down and reprovisions the Rancher cluster. This
+  example never builds a dist; set it when you want a clean cluster (a reused
+  cluster keeps any previously mounted dist).
 - `REPO`: Rancher channel for `muster up` (`rancher-com-rc`, `rancher-latest`,
   `rancher-alpha`, `rancher-prime`, ...).
 - `VERSION`: Rancher image/chart tag (`head`, `2.13`, `2.13.4-rc1`). Defaults

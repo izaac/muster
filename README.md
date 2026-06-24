@@ -87,62 +87,30 @@ branch name.
 
 ## Running tests
 
-muster emits a handoff that test frameworks consume directly. Use `--out` to
-select the format.
-
-### Upstream Cypress (rancher/dashboard)
+muster emits a handoff that test frameworks consume directly; pick the format
+with `--out`. The `env` handoff (default) emits `TEST_BASE_URL`,
+`RANCHER_HOSTNAME`, `KUBECONFIG`, and `TEST_PASSWORD`. The `cypress` handoff
+emits the vars `rancher/dashboard` Cypress reads in `cypress/base-config.ts`
+(`TEST_BASE_URL`, `TEST_USERNAME`, `CATTLE_BOOTSTRAP_PASSWORD`, `TEST_PASSWORD`,
+`API`).
 
 ```sh
-# Bring up Rancher with cypress handoff
 muster up --provider k3d --out cypress
-
-# Source the handoff and run tests
-eval "$(muster env)"
-cd ~/repos/dashboard
-yarn cypress run
+eval "$(muster env)"            # source the handoff into your shell
+cd ~/repos/dashboard && yarn cypress run
 ```
 
-The `cypress` handoff emits `TEST_BASE_URL`, `TEST_USERNAME`,
-`CATTLE_BOOTSTRAP_PASSWORD`, `TEST_PASSWORD`, and `API`: the same env vars
-`rancher/dashboard` Cypress expects in `cypress/base-config.ts`.
-
-For a fully containerized runner (no host Node/Cypress install), see
-[`examples/cypress-upstream/`](examples/cypress-upstream/), which builds
-Chrome on Linux and Chromium on macOS.
-
-The upstream Cypress example targets GitHub Actions parity on Linux with Google
-Chrome. macOS local Docker Desktop uses Chromium. Override with
-`CYPRESS_BROWSER=chrome` or `CYPRESS_BROWSER=chromium`, then rebuild the
-example image.
-
-### Playwright (izaac/dashboard-e2e-pw)
-
-```sh
-# Bring up Rancher with env handoff (default)
-muster up --provider k3d --out env
-
-# Source the handoff and run Playwright tests
-eval "$(muster env)"
-cd ~/repos/dashboard-e2e-pw
-yarn playwright test
-```
-
-The `env` handoff emits `TEST_BASE_URL`, `RANCHER_HOSTNAME`, `KUBECONFIG`,
-and `TEST_PASSWORD`.
-
-For a fully containerized runner, see [`examples/playwright/`](examples/playwright/),
-which builds a self-contained image and bind-mounts your suite checkout.
-
-### With a custom dashboard build
-
-Combine both, build your UI branch and run tests against it:
+To build a UI branch and test against it:
 
 ```sh
 muster build-ui --dashboard-src ~/repos/dashboard --dashboard-branch my-feature
 muster up --provider k3d --dashboard-dist ~/repos/dashboard/dist --out cypress
-eval "$(muster env)"
-cd ~/repos/dashboard && yarn cypress run
 ```
+
+For fully containerized runners (no host Node/Cypress/Playwright install) see
+[`examples/cypress-upstream/`](examples/cypress-upstream/) and
+[`examples/playwright/`](examples/playwright/), which build their own images,
+bind-mount your suite checkout, and document their own knobs.
 
 ## Requirements
 
@@ -154,12 +122,10 @@ cd ~/repos/dashboard && yarn cypress run
   `RANCHER_HOST` env). muster installs Rancher via helm but never creates or
   deletes the cluster (`down` is a no-op). `--external` is unsupported here:
   `RANCHER_HOST` is already reachable, so there is no local port to tunnel.
-- `build-ui`: nothing extra in the common case. muster reads the Node version
-  the dashboard branch pins (`.nvmrc`, falling back to `engines.node`) and, when
-  the host Node is a different major, downloads a checksum-verified Node plus a
-  matching `yarn` into its cache and builds with those. So `master` builds on
-  Node 24 and `release-2.14` on Node 20 with no host setup. A host `node` of the
-  right major is reused as-is; `--node-bin <dir>` forces a specific toolchain.
+- `build-ui`: no host Node needed. muster builds with the exact Node major the
+  dashboard branch pins (`.nvmrc`, else `engines.node`), fetching a
+  checksum-verified Node plus `yarn` into its cache when the host major differs;
+  `--node-bin <dir>` overrides.
 - External mode auto-fetches a pinned `cloudflared`
 
 ## Development

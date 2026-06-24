@@ -45,7 +45,7 @@ Flags:
   --provider <k3d|existing|docker>  Substrate driver (default: k3d).
   --instance <name>                 Instance id (default: e2e).
   --external                        Expose Rancher via a public tunnel.
-  --repo <channel>                  Rancher channel (default: rancher-com-rc):
+  --repo <channel>                  Rancher channel (default: rancher-com-alpha):
                                     rancher-prime|rancher-latest|rancher-alpha|
                                     rancher-community|rancher-com-rc|rancher-com-alpha.
   --version <tag>                   Image tag: head or a version like 2.13 /
@@ -81,7 +81,7 @@ USAGE
 PROVIDER="${PROVIDER:-k3d}"
 INSTANCE="${INSTANCE:-e2e}"
 EXTERNAL="${EXTERNAL:-false}"
-RANCHER_REPO="${RANCHER_REPO:-rancher-com-rc}"
+RANCHER_REPO="${RANCHER_REPO:-rancher-com-alpha}"
 RANCHER_IMAGE_TAG="${RANCHER_IMAGE_TAG:-head}"
 RANCHER_PASSWORD="${RANCHER_PASSWORD:-password1234}"
 OUT="${OUT:-env}"

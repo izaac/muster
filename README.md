@@ -45,12 +45,12 @@ muster up --provider k3d --repo rancher-latest --version 2.13
 # A specific prime release (gated registry; needs pull creds out of band)
 muster up --provider k3d --repo rancher-prime --version 2.13.4
 
-# Rolling head from the community channel (default)
-muster up --provider k3d --repo rancher-com-rc --version head
+# Rolling head from the community alpha channel (default)
+muster up --provider k3d --repo rancher-com-alpha --version head
 ```
 
 Channels: `rancher-prime`, `rancher-latest`, `rancher-alpha`,
-`rancher-community`, `rancher-com-rc` (default), `rancher-com-alpha`. The
+`rancher-community`, `rancher-com-rc`, `rancher-com-alpha` (default). The
 alpha/rc staging channels publish freely pullable images and are the happy
 path for testing; prime is gated.
 

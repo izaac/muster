@@ -14,9 +14,9 @@
 #   EXTERNAL       Set to true for cloudflared tunnel (provisioning tests).
 #   FRESH          Set to true to tear down and reprovision first, so a freshly
 #                  built dist is mounted (a reused cluster keeps its old dist).
-#   REPO           Rancher channel for `muster up` (e.g. rancher-com-rc,
+#   REPO           Rancher channel for `muster up` (e.g. rancher-com-alpha,
 #                  rancher-latest, rancher-alpha, rancher-prime). Default: the
-#                  muster default (rancher-com-rc).
+#                  muster default (rancher-com-alpha).
 #   VERSION        Rancher image/chart tag for `muster up` (e.g. head, 2.13,
 #                  2.13.4-rc1). Default: the muster default (head).
 #   CYPRESS_BROWSER Browser for the runner. Default: chrome on Linux (GitHub

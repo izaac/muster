@@ -151,6 +151,50 @@ mkdir -p ~/.zfunc && cp completions/_muster ~/.zfunc/_muster
 echo 'fpath=(~/.zfunc $fpath); autoload -U compinit && compinit' >> ~/.zshrc
 ```
 
+## Troubleshooting
+
+### `docker: command not found`
+
+Docker Desktop is installed but the CLI binary is not on your `PATH`.
+On macOS, Docker Desktop places its binaries in `~/.docker/bin/`:
+
+```sh
+export PATH="$HOME/.docker/bin:$PATH"   # add to ~/.zshrc for persistence
+```
+
+### `Cannot connect to the Docker daemon`
+
+Docker Desktop is installed and on `PATH` but the daemon isn't running.
+Start it before running muster:
+
+```sh
+open -a Docker          # macOS
+# wait ~30 s for the engine to boot, then verify:
+docker info
+```
+
+### `'release-X.Y' matched multiple remote tracking branches`
+
+Your dashboard checkout has multiple remotes (e.g. `origin` + `upstream`) that
+both contain the target branch. Tell git which remote to prefer:
+
+```sh
+cd "$DASHBOARD_SRC"
+git config checkout.defaultRemote upstream   # or origin, whichever is rancher/dashboard
+```
+
+### `--dashboard-src '~/repos/...' is not a git checkout`
+
+The tilde `~` does **not** expand inside quotes. Use `$HOME` instead:
+
+```sh
+# ✗ broken
+DASHBOARD_SRC="~/repos/dashboard/dashboard"
+
+# ✓ works
+DASHBOARD_SRC="$HOME/repos/dashboard/dashboard"
+```
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).

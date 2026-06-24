@@ -43,6 +43,35 @@ field() {
   [[ "$output" == *"unknown --repo"* ]]
 }
 
+@test "environment overrides the top-level defaults" {
+  export PROVIDER=docker INSTANCE=lab EXTERNAL=true
+  export RANCHER_REPO=rancher-alpha RANCHER_IMAGE_TAG=2.10.1 OUT=json
+  run "$MUSTER" show
+  [ "$status" -eq 0 ]
+  [ "$(field provider "$output")" = "docker" ]
+  [ "$(field instance "$output")" = "lab" ]
+  [ "$(field external "$output")" = "true" ]
+  [ "$(field repo "$output")" = "rancher-alpha" ]
+  [ "$(field version "$output")" = "2.10.1" ]
+  [ "$(field out "$output")" = "json" ]
+}
+
+@test "flags win over the environment for the top-level vars" {
+  export PROVIDER=docker INSTANCE=lab OUT=json
+  run "$MUSTER" show --provider existing --instance cli --out cypress
+  [ "$status" -eq 0 ]
+  [ "$(field provider "$output")" = "existing" ]
+  [ "$(field instance "$output")" = "cli" ]
+  [ "$(field out "$output")" = "cypress" ]
+}
+
+@test "--password is accepted and requires a value" {
+  run "$MUSTER" show --password s3cret
+  [ "$status" -eq 0 ]
+  run "$MUSTER" show --password
+  [ "$status" -ne 0 ]
+}
+
 @test "explicit --config seeds values" {
   cat > cfg.sh <<'EOF'
 PROVIDER="existing"

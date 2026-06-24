@@ -15,7 +15,9 @@ muster up --provider k3d --external         # public via cloudflared tunnel
 muster down                                 # tear down everything
 ```
 
-Copy `config.sh.example` → `config.sh` for defaults; flags override.
+Every knob resolves as `flag > config.sh > environment > built-in default`.
+Copy `config.sh.example` → `config.sh` for defaults, export env vars, or pass
+flags; the most specific wins.
 
 ## Choosing a Rancher channel and version
 

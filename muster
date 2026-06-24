@@ -50,6 +50,8 @@ Flags:
                                     rancher-community|rancher-com-rc|rancher-com-alpha.
   --version <tag>                   Image tag: head or a version like 2.13 /
                                     2.13.4-rc1 (default: head).
+  --password <secret>               Rancher bootstrap/admin password (default:
+                                    RANCHER_PASSWORD env, else password1234).
   --out <env|cypress|json>          Handoff format (default: env).
   --dashboard-src <path>            rancher/dashboard checkout to build (build-ui).
   --dashboard-branch <name>         Force the UI branch (build-ui); default derives
@@ -76,13 +78,13 @@ USAGE
 }
 
 # Defaults; overridable by config file then flags.
-PROVIDER="k3d"
-INSTANCE="e2e"
-EXTERNAL="false"
-RANCHER_REPO="rancher-com-rc"
-RANCHER_IMAGE_TAG="head"
+PROVIDER="${PROVIDER:-k3d}"
+INSTANCE="${INSTANCE:-e2e}"
+EXTERNAL="${EXTERNAL:-false}"
+RANCHER_REPO="${RANCHER_REPO:-rancher-com-rc}"
+RANCHER_IMAGE_TAG="${RANCHER_IMAGE_TAG:-head}"
 RANCHER_PASSWORD="${RANCHER_PASSWORD:-password1234}"
-OUT="env"
+OUT="${OUT:-env}"
 DASHBOARD_SRC="${DASHBOARD_SRC:-}"
 DASHBOARD_DIST="${DASHBOARD_DIST:-}"
 DASHBOARD_BRANCH="${DASHBOARD_BRANCH:-}"
@@ -130,6 +132,10 @@ while [ $# -gt 0 ]; do
       ;;
     --repo)
       RANCHER_REPO="${2:?--repo needs a value}"
+      shift 2
+      ;;
+    --password)
+      RANCHER_PASSWORD="${2:?--password needs a value}"
       shift 2
       ;;
     --out)

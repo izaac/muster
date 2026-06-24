@@ -58,6 +58,10 @@ Flags:
                                     or where build-ui writes (default: <src>/dist).
   --node-bin <dir>                  Node bin dir to use for build-ui (escape hatch);
                                     default auto-selects Node from the branch.
+  --kubeconfig <path>               Kubeconfig for the target cluster (existing
+                                    provider; default: KUBECONFIG env).
+  --rancher-host <hostname>         Hostname Rancher is served at (existing
+                                    provider; default: RANCHER_HOST env).
   --config <path>                   Config file to source (default: ./config.sh).
   -h, --help                        Show this help.
 
@@ -66,7 +70,7 @@ Examples:
   muster build-ui --dashboard-src ~/repos/dashboard --version head
   muster up --provider k3d --dashboard-dist ~/repos/dashboard/dist
   muster up --provider k3d --external --repo rancher-alpha --version head
-  muster up --provider existing --out cypress
+  muster up --provider existing --kubeconfig ~/.kube/config --rancher-host rancher.example.com --out cypress
   muster down
 USAGE
 }
@@ -83,6 +87,8 @@ DASHBOARD_SRC="${DASHBOARD_SRC:-}"
 DASHBOARD_DIST="${DASHBOARD_DIST:-}"
 DASHBOARD_BRANCH="${DASHBOARD_BRANCH:-}"
 NODE_BIN="${NODE_BIN:-}"
+KUBECONFIG="${KUBECONFIG:-}"
+RANCHER_HOST="${RANCHER_HOST:-}"
 CONFIG=""
 
 CMD="${1:-help}"
@@ -146,6 +152,14 @@ while [ $# -gt 0 ]; do
       NODE_BIN="${2:?--node-bin needs a value}"
       shift 2
       ;;
+    --kubeconfig)
+      KUBECONFIG="${2:?--kubeconfig needs a value}"
+      shift 2
+      ;;
+    --rancher-host)
+      RANCHER_HOST="${2:?--rancher-host needs a value}"
+      shift 2
+      ;;
     --config)
       shift 2
       ;;
@@ -176,7 +190,7 @@ case "$RANCHER_REPO" in
 esac
 
 export INSTANCE EXTERNAL RANCHER_REPO RANCHER_IMAGE_TAG OUT RANCHER_PASSWORD
-export DASHBOARD_SRC DASHBOARD_DIST DASHBOARD_BRANCH NODE_BIN
+export DASHBOARD_SRC DASHBOARD_DIST DASHBOARD_BRANCH NODE_BIN KUBECONFIG RANCHER_HOST
 
 load_core() {
   # shellcheck source=lib/download.sh
@@ -203,6 +217,9 @@ load_core() {
 
 # High-level command flows are assembled in Phase 1+ as the libs land.
 cmd_up() {
+  if [ "$PROVIDER" = existing ] && is_true "${EXTERNAL:-}"; then
+    die "existing provider does not support --external (RANCHER_HOST is already reachable)"
+  fi
   local tunnel_url=""
   if is_true "${EXTERNAL:-}"; then
     tunnel_url="$(tunnel_up)"
@@ -267,6 +284,8 @@ dashboard_src=${DASHBOARD_SRC:-<none>}
 dashboard_branch=${DASHBOARD_BRANCH:-<derived>}
 dashboard_dist=${DASHBOARD_DIST:-<none>}
 node_bin=${NODE_BIN:-<auto>}
+kubeconfig=${KUBECONFIG:-<none>}
+rancher_host=${RANCHER_HOST:-<none>}
 config=${CONFIG:-<none>}
 EOF
     ;;

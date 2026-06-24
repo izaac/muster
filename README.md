@@ -9,6 +9,8 @@ hands off to Cypress, Playwright, or a human at a browser.
 ```sh
 muster up --provider k3d                    # helm chart on k3s-in-docker
 muster up --provider docker                 # standalone rancher/rancher container
+muster up --provider existing \
+  --kubeconfig ~/.kube/config --rancher-host rancher.example.com  # BYO cluster
 muster up --provider k3d --external         # public via cloudflared tunnel
 muster down                                 # tear down everything
 ```
@@ -131,6 +133,11 @@ cd ~/repos/dashboard && yarn cypress run
 - `bash` 4+, `docker`
 - k3d provider: `k3d`, `helm`, `kubectl`
 - docker provider: just `docker` (community channels); `helm` for staging/prime
+- existing provider: `helm`, `kubectl`. Bring your own cluster: pass
+  `--kubeconfig <path>` and `--rancher-host <hostname>` (or the `KUBECONFIG` /
+  `RANCHER_HOST` env). muster installs Rancher via helm but never creates or
+  deletes the cluster (`down` is a no-op). `--external` is unsupported here:
+  `RANCHER_HOST` is already reachable, so there is no local port to tunnel.
 - `build-ui`: nothing extra in the common case. muster reads the Node version
   the dashboard branch pins (`.nvmrc`, falling back to `engines.node`) and, when
   the host Node is a different major, downloads a checksum-verified Node plus a

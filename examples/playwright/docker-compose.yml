@@ -35,6 +35,11 @@ services:
     volumes:
       - ${PW_REPO_PATH:?set PW_REPO_PATH to dashboard-e2e-pw checkout}:/app
       - pw-node-modules:/app/node_modules
+      # The suite checkout may contain a rancher/dashboard tree at
+      # dashboard-src/ (used by CI to build the UI dist). A bind mount ignores
+      # .dockerignore, so mask it with an anonymous volume to keep its Cypress
+      # specs out of Playwright test discovery.
+      - /app/dashboard-src
       - ./entrypoint.sh:/opt/entrypoint.sh:ro
     tmpfs:
       - /tmp

@@ -32,3 +32,5 @@ Chrome on Linux (GitHub Actions parity), Chromium on macOS. Override with
 - `GREP_TAGS`: grep tag filter, e.g. `@generic` (one-shot default
   `@navigation`).
 - `EXTERNAL`: `true` provisions a cloudflared tunnel.
+- `FRESH`: `true` tears down and reprovisions so a freshly built dist is
+  mounted (a reused cluster keeps its old dist).

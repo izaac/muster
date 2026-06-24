@@ -12,6 +12,8 @@
 #                  Test dependencies install into a named docker volume.
 #   GREP_TAGS      Cypress grep tag filter (e.g. @navigation, @generic).
 #   EXTERNAL       Set to true for cloudflared tunnel (provisioning tests).
+#   FRESH          Set to true to tear down and reprovision first, so a freshly
+#                  built dist is mounted (a reused cluster keeps its old dist).
 #   CYPRESS_BROWSER Browser for the runner. Default: chrome on Linux (GitHub
 #                  Actions parity), chromium on macOS local Docker Desktop.
 #   PROVIDER       muster provider (default: k3d).
@@ -41,15 +43,30 @@ fi
 
 export DASHBOARD_SRC PROVIDER INSTANCE CYPRESS_BROWSER
 
+is_truthy() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1 | true | yes | on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# A reused cluster keeps whatever dist it was provisioned with, so a freshly
+# built dist is ignored until it is reprovisioned. Set FRESH=true to tear the
+# instance down first and provision again.
+if is_truthy "${FRESH:-}"; then
+  echo "--- FRESH: tearing down existing $PROVIDER/$INSTANCE ---"
+  "$MUSTER" down --provider "$PROVIDER" --instance "$INSTANCE" >/dev/null 2>&1 || true
+fi
+
 # Provision if not already up.
 if ! "$MUSTER" env --provider "$PROVIDER" --instance "$INSTANCE" --out cypress >/dev/null 2>&1; then
   echo "--- Provisioning Rancher ($PROVIDER/$INSTANCE) ---"
   up_args=(--provider "$PROVIDER" --instance "$INSTANCE"
     --dashboard-dist "$DASHBOARD_SRC/dist" --out cypress)
-  case "$(printf '%s' "${EXTERNAL:-}" | tr '[:upper:]' '[:lower:]')" in
-    1 | true | yes | on) up_args+=(--external) ;;
-  esac
+  is_truthy "${EXTERNAL:-}" && up_args+=(--external)
   "$MUSTER" up "${up_args[@]}"
+else
+  echo "--- Reusing existing $PROVIDER/$INSTANCE (dist not rebuilt; set FRESH=true to reprovision) ---"
 fi
 
 # Source the handoff.

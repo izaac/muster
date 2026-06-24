@@ -11,6 +11,8 @@
 #   DASHBOARD_SRC   Path to rancher/dashboard checkout (for dist mount).
 #   GREP_TAGS       Playwright grep tag filter (e.g. @navigation, @generic).
 #   EXTERNAL        Set to true for cloudflared tunnel (provisioning tests).
+#   FRESH           Set to true to tear down and reprovision first, so a freshly
+#                   built dist is mounted (a reused cluster keeps its old dist).
 #   PROVIDER        muster provider (default: k3d).
 #   INSTANCE        muster instance name (default: e2e).
 
@@ -26,15 +28,30 @@ MUSTER="$MUSTER_ROOT/muster"
 
 export PW_REPO_PATH PROVIDER INSTANCE
 
+is_truthy() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1 | true | yes | on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# A reused cluster keeps whatever dist it was provisioned with, so a freshly
+# built dist is ignored until it is reprovisioned. Set FRESH=true to tear the
+# instance down first and provision again.
+if is_truthy "${FRESH:-}"; then
+  echo "--- FRESH: tearing down existing $PROVIDER/$INSTANCE ---"
+  "$MUSTER" down --provider "$PROVIDER" --instance "$INSTANCE" >/dev/null 2>&1 || true
+fi
+
 # Provision if not already up.
 if ! "$MUSTER" env --provider "$PROVIDER" --instance "$INSTANCE" --out cypress >/dev/null 2>&1; then
   echo "--- Provisioning Rancher ($PROVIDER/$INSTANCE) ---"
   up_args=(--provider "$PROVIDER" --instance "$INSTANCE" --out cypress)
   [ -n "${DASHBOARD_SRC:-}" ] && up_args+=(--dashboard-dist "$DASHBOARD_SRC/dist")
-  case "$(printf '%s' "${EXTERNAL:-}" | tr '[:upper:]' '[:lower:]')" in
-    1 | true | yes | on) up_args+=(--external) ;;
-  esac
+  is_truthy "${EXTERNAL:-}" && up_args+=(--external)
   "$MUSTER" up "${up_args[@]}"
+else
+  echo "--- Reusing existing $PROVIDER/$INSTANCE (dist not rebuilt; set FRESH=true to reprovision) ---"
 fi
 
 # Source the handoff.

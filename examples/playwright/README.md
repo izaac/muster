@@ -30,3 +30,5 @@ no host-specific browser split.
 - `PW_REPO_PATH` (required): path to a `dashboard-e2e-pw` checkout.
 - `GREP_TAGS`: grep tag filter (one-shot default `@navigation`).
 - `EXTERNAL`: `true` provisions a cloudflared tunnel.
+- `FRESH`: `true` tears down and reprovisions so a freshly built dist is
+  mounted (a reused cluster keeps its old dist).

@@ -6,8 +6,7 @@ case "${CYPRESS_BROWSER:-auto}" in
   auto)
     CYPRESS_BROWSER="$(cat /usr/local/share/cypress-browser)"
     ;;
-  chrome | chromium)
-    ;;
+  chrome | chromium) ;;
   google-chrome)
     CYPRESS_BROWSER=chrome
     ;;

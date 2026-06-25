@@ -82,6 +82,19 @@ driver_tunnel_port() {
   k3d_https_port
 }
 
+# endpoint_resolves - true if HOST has a record via the platform resolver
+# (getent on Linux, dscacheutil on macOS, ping as a last resort).
+endpoint_resolves() {
+  local host="$1"
+  if command -v getent >/dev/null 2>&1; then
+    getent hosts "$host" >/dev/null
+  elif command -v dscacheutil >/dev/null 2>&1; then
+    dscacheutil -q host -a name "$host" | grep -q ip_address
+  else
+    ping -c 1 "$host" >/dev/null 2>&1
+  fi
+}
+
 driver_up() {
   require_cmd k3d "run muster via its container image, or install k3d"
   require_cmd helm "run muster via its container image, or install helm"
@@ -124,18 +137,20 @@ driver_up() {
 
   local host
   host="$(driver_endpoint)"
-  local resolves=0
-  if command -v getent >/dev/null 2>&1; then
-    getent hosts "$host" >/dev/null && resolves=1
-  elif command -v dscacheutil >/dev/null 2>&1; then
-    dscacheutil -q host -a name "$host" | grep -q ip_address && resolves=1
-  else
-    ping -c 1 "$host" >/dev/null 2>&1 && resolves=1
-  fi
+  # Ephemeral endpoints (cloudflared *.trycloudflare.com, wildcard *.sslip.io)
+  # may not have propagated on the first lookup, so retry before giving up.
+  local resolves=0 i
+  for ((i = 1; i <= 10; i++)); do
+    if endpoint_resolves "$host"; then
+      resolves=1
+      break
+    fi
+    sleep 2
+  done
 
   if [ "$resolves" -eq 0 ]; then
     k3d cluster delete "$INSTANCE" || true
-    die "'$host' does not resolve - local DNS is blocking sslip.io"
+    die "'$host' did not resolve after retries - check local DNS / propagation"
   fi
 }
 

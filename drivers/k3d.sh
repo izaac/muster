@@ -54,7 +54,7 @@ k3d_kc() {
 
 # k3d_lb_ip - the serverlb container's IP on the instance network.
 k3d_lb_ip() {
-  docker inspect "k3d-${INSTANCE}-serverlb" \
+  container_cli inspect "k3d-${INSTANCE}-serverlb" \
     --format "{{(index .NetworkSettings.Networks \"$(k3d_network)\").IPAddress}}"
 }
 
@@ -113,6 +113,24 @@ driver_up() {
     -p "$(k3d_http_port):80@loadbalancer"
     --wait --timeout 180s
   )
+  # Podman (rootless or rootful) needs the socket k3d bind-mounts into its nodes
+  # pointed at the real podman socket (k3d defaults to /var/run/docker.sock,
+  # absent on podman-only hosts). Rootless podman additionally runs the k3s
+  # kubelet in a user namespace, where it cannot write /proc/sys/kernel/*, so it
+  # needs feature-gates=KubeletInUserNamespace=true. Both are no-ops on real
+  # Docker, and the kubelet gate is skipped for rootful podman, so CI (rootful
+  # docker) and a rootful-podman substrate are unaffected. See lib/util.sh.
+  local podman_sock
+  podman_sock="$(podman_docker_sock)"
+  if [ -n "$podman_sock" ]; then
+    export DOCKER_SOCK="$podman_sock"
+    if is_rootless_podman_sock "$podman_sock"; then
+      create_args+=(--k3s-arg "--kubelet-arg=feature-gates=KubeletInUserNamespace=true@server:*")
+      log_info "k3d: rootless podman detected, enabling KubeletInUserNamespace"
+    else
+      log_info "k3d: rootful podman detected, using $DOCKER_SOCK"
+    fi
+  fi
   # Containerised muster reaches the API through the host gateway. k3d keeps its
   # default API bind (binding to host.docker.internal is not possible on Docker
   # Desktop), but we add host.docker.internal as a TLS SAN so the kubeconfig can
@@ -132,7 +150,7 @@ driver_up() {
   # (<ip>.sslip.io). On Docker Desktop the bridge lives inside the VM and is not
   # routable from the host, so the muster container must be on the network itself.
   if in_container; then
-    docker network connect "$(k3d_network)" "$(cat /etc/hostname)" 2>/dev/null || true
+    container_cli network connect "$(k3d_network)" "$(cat /etc/hostname)" 2>/dev/null || true
   fi
 
   local host
@@ -167,7 +185,7 @@ driver_settle() {
   local threshold=50 settle_samples=3 sample_interval=10 max_attempts=30
   local low_streak=0 cpu i node="k3d-${INSTANCE}-server-0"
   for ((i = 1; i <= max_attempts; i++)); do
-    cpu=$(docker stats --no-stream --format '{{.CPUPerc}}' "$node" 2>/dev/null \
+    cpu=$(container_cli stats --no-stream --format '{{.CPUPerc}}' "$node" 2>/dev/null \
       | tr -d '%' | cut -d. -f1)
     cpu=${cpu:-0}
     if [ "$cpu" -lt "$threshold" ]; then

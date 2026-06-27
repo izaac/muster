@@ -73,6 +73,60 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1${2:+ ($2)}"
 }
 
+# --- container runtime -------------------------------------------------------
+
+# podman_docker_sock - echo the podman socket path when the active Docker
+# endpoint (DOCKER_HOST) is a podman socket, else echo nothing. Matches both
+# rootful (/run/podman/podman.sock) and rootless
+# (/run/user/<uid>/podman/podman.sock) sockets.
+#
+# k3d bind-mounts the Docker socket into its tools/node containers and defaults
+# to /var/run/docker.sock, which does not exist on a podman-only host, so k3d
+# needs DOCKER_SOCK pointed at the real podman socket regardless of mode.
+podman_docker_sock() {
+  local sock=""
+  case "${DOCKER_HOST:-}" in
+    *podman*) sock="${DOCKER_HOST#unix://}" ;;
+  esac
+  if [ -n "$sock" ] && [ -S "$sock" ]; then
+    printf '%s' "$sock"
+  fi
+  return 0
+}
+
+# is_rootless_podman_sock <sock> - true when the given podman socket is a
+# rootless one (lives under the per-user runtime dir). Only rootless k3s needs
+# feature-gates=KubeletInUserNamespace=true; rootful podman (and real Docker,
+# including CI) runs the kubelet in the initial user namespace where that gate
+# must NOT be set.
+is_rootless_podman_sock() {
+  local sock="$1"
+  case "$sock" in
+    "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/* | /run/user/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# container_cli <args...> - run a container-runtime CLI command against the
+# daemon muster is actually driving.
+#
+# k3d is a Docker API client and honours DOCKER_HOST, so it talks to whichever
+# daemon DOCKER_HOST points at. On a podman host the `docker` CLI is a podman
+# shim that honours CONTAINER_HOST, NOT DOCKER_HOST, so a plain `docker inspect`
+# silently queries a different (usually rootless) daemon than the one k3d built
+# the cluster on. Route through `podman --url <sock>` when a podman socket is in
+# play so CLI queries land on the same daemon as k3d. On real Docker (CI) there
+# is no podman socket and no podman binary, so fall back to plain `docker`.
+container_cli() {
+  local sock
+  sock="$(podman_docker_sock)"
+  if [ -n "$sock" ] && command -v podman >/dev/null 2>&1; then
+    podman --url "unix://$sock" "$@"
+  else
+    docker "$@"
+  fi
+}
+
 # --- retries -----------------------------------------------------------------
 
 # retry <attempts> <sleep_s> <description> [--] <command...>

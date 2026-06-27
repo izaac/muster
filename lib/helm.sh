@@ -78,14 +78,17 @@ version_string() {
 
 # resolve_chart_version <repo> <tag> <search_text> - pick the chart version from
 # the lines of `helm search repo <repo> --devel --versions`. Pure; prints the
-# version (empty if nothing matched). Ported verbatim from the ansible shell.
+# version (empty if nothing matched). Based on the ansible shell, but the head
+# path uses `sort -V` instead of trusting helm's order: helm sorts pre-release
+# identifiers lexically, so 2.x-alpha9 ranks above 2.x-alpha14 ('9' > '1') and a
+# plain `head -1` would pick a stale alpha. Version sort gives the true newest.
 resolve_chart_version() {
   local repo="$1" tag="$2" search="$3" vs filter
   vs="$(version_string "$tag")"
 
   if [ "$tag" = "head" ]; then
-    printf '%s\n' "$search" | sed -n '1!p' | head -1 \
-      | awk '{print $2}' | tr -d '[:space:]'
+    printf '%s\n' "$search" | sed -n '1!p' \
+      | awk '{print $2}' | sort -V | tail -1 | tr -d '[:space:]'
     return 0
   fi
 

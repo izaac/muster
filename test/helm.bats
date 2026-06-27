@@ -22,12 +22,16 @@ setup() {
       'rancher-latest/rancher	2.12.4	2.12.4	Install Rancher Server'
   )"
 
-  # Optimus alpha: alpha ladder across two minors.
+  # Optimus alpha: alpha ladder across two minors. Rows are in helm's own
+  # (lexical) order, where alpha9 ranks above alpha10/alpha14, so a naive
+  # head -1 would pick the stale alpha9 instead of the real newest alpha14.
   SEARCH_ALPHA="$(
     printf '%s\n' \
       'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
-      'rancher-alpha/rancher	2.14.0-alpha5	2.14.0-alpha5	Install Rancher Server' \
-      'rancher-alpha/rancher	2.14.0-alpha4	2.14.0-alpha4	Install Rancher Server' \
+      'rancher-alpha/rancher	2.14.0-alpha9	2.14.0-alpha9	Install Rancher Server' \
+      'rancher-alpha/rancher	2.14.0-alpha8	2.14.0-alpha8	Install Rancher Server' \
+      'rancher-alpha/rancher	2.14.0-alpha14	2.14.0-alpha14	Install Rancher Server' \
+      'rancher-alpha/rancher	2.14.0-alpha10	2.14.0-alpha10	Install Rancher Server' \
       'rancher-alpha/rancher	2.13.0-alpha2	2.13.0-alpha2	Install Rancher Server'
   )"
 
@@ -100,9 +104,9 @@ setup() {
 
 # --- resolve_chart_version: head ---------------------------------------------
 
-@test "head picks the first (newest) data row, skipping the header" {
+@test "head selects the newest by version sort, not helm's lexical order" {
   [ "$(resolve_chart_version rancher-latest head "$SEARCH_LATEST")" = "2.13.0-rc2" ]
-  [ "$(resolve_chart_version rancher-alpha head "$SEARCH_ALPHA")" = "2.14.0-alpha5" ]
+  [ "$(resolve_chart_version rancher-alpha head "$SEARCH_ALPHA")" = "2.14.0-alpha14" ]
 }
 
 # --- resolve_chart_version: rancher-latest (-rc filter) ----------------------
@@ -128,8 +132,12 @@ setup() {
 # --- resolve_chart_version: rancher-alpha (-alpha filter) --------------------
 
 @test "alpha with a minor pin selects the highest -alpha for that minor" {
-  [ "$(resolve_chart_version rancher-alpha 2.14 "$SEARCH_ALPHA")" = "2.14.0-alpha5" ]
+  [ "$(resolve_chart_version rancher-alpha 2.14 "$SEARCH_ALPHA")" = "2.14.0-alpha14" ]
   [ "$(resolve_chart_version rancher-alpha 2.13 "$SEARCH_ALPHA")" = "2.13.0-alpha2" ]
+}
+
+@test "alpha minor pin sort is numeric, not lexical (alpha14 > alpha9)" {
+  [ "$(resolve_chart_version rancher-alpha 2.14 "$SEARCH_ALPHA")" = "2.14.0-alpha14" ]
 }
 
 # --- resolve_chart_version: no-filter channels -------------------------------

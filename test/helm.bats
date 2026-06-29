@@ -43,6 +43,39 @@ setup() {
       'rancher-prime/rancher	2.10.1	2.10.1	Install Rancher Server' \
       'rancher-prime/rancher	2.9.5	2.9.5	Install Rancher Server'
   )"
+
+  # Prime stable with a GA and its own hotfix sibling for the same base, plus a
+  # later GA patch. A plain 2.13.3 pin must return the GA, not the -hotfix row,
+  # even though a bare sort -V would rank the suffixed string differently.
+  SEARCH_PRIME_HOTFIX="$(
+    printf '%s\n' \
+      'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+      'rancher-prime/rancher	2.13.6	2.13.6	Install Rancher Server' \
+      'rancher-prime/rancher	2.13.3-hotfix-751b.1	2.13.3-hotfix-751b.1	Install Rancher Server' \
+      'rancher-prime/rancher	2.13.3	2.13.3	Install Rancher Server'
+  )"
+
+  # Chart index.yaml fragments (the freshness path parses these for dates).
+  INDEX_ALPHA="$(
+    printf '%s\n' \
+      '  rancher:' \
+      '  - apiVersion: v2' \
+      '    version: 2.14.3-alpha6' \
+      '    created: 2026-06-26T10:00:00Z' \
+      '  - apiVersion: v2' \
+      '    version: 2.14.3-alpha5' \
+      '    created: 2026-06-20T10:00:00Z' \
+      '  - apiVersion: v2' \
+      '    version: 2.16.0-alpha1' \
+      '    created: 2026-06-28T10:00:00Z'
+  )"
+  INDEX_LATEST="$(
+    printf '%s\n' \
+      '  rancher:' \
+      '  - apiVersion: v2' \
+      '    version: 2.14.2-rc1' \
+      '    created: 2026-05-27T10:00:00Z'
+  )"
 }
 
 # --- version_string ----------------------------------------------------------
@@ -183,4 +216,108 @@ setup() {
   run dv_normalize_sha "$pin"
   [ "$status" -eq 0 ]
   [ "$output" = "$pin" ]
+}
+
+# --- resolve_chart_version: GA outranks its own hotfix/pre-release -----------
+
+@test "a plain GA pin beats a same-base hotfix sibling (prime)" {
+  [ "$(resolve_chart_version rancher-prime 2.13.3 "$SEARCH_PRIME_HOTFIX")" = "2.13.3" ]
+}
+
+@test "a prime-only late GA patch pins exactly (2.13.6)" {
+  [ "$(resolve_chart_version rancher-prime 2.13.6 "$SEARCH_PRIME_HOTFIX")" = "2.13.6" ]
+}
+
+@test "a prime minor pin takes the highest GA, not a hotfix" {
+  [ "$(resolve_chart_version rancher-prime 2.13 "$SEARCH_PRIME_HOTFIX")" = "2.13.6" ]
+}
+
+# --- freshness pure helpers --------------------------------------------------
+
+@test "index_rancher_dates emits stab|version|created per rancher entry" {
+  out="$(printf '%s\n' "$INDEX_LATEST" | index_rancher_dates)"
+  [ "$out" = "0|2.14.2-rc1|2026-05-27T10:00:00Z" ]
+}
+
+@test "newest_dated filters by prerelease and returns the newest version|date" {
+  out="$(printf '%s\n' "$INDEX_ALPHA" | index_rancher_dates \
+    | newest_dated '' '-alpha')"
+  [ "$out" = "2.16.0-alpha1|2026-06-28" ]
+}
+
+@test "newest_dated honours a minor version regex" {
+  out="$(printf '%s\n' "$INDEX_ALPHA" | index_rancher_dates \
+    | newest_dated '2[.]14([.]|-)' '-alpha')"
+  [ "$out" = "2.14.3-alpha6|2026-06-26" ]
+}
+
+@test "parse_dockerhub_date pulls the date out of last_updated" {
+  [ "$(parse_dockerhub_date '{"name":"head","last_updated":"2026-06-29T12:00:00.123Z"}')" = "2026-06-29" ]
+  [ -z "$(parse_dockerhub_date '{}')" ]
+}
+
+# --- freshness_maybe_promote: precedence and date logic ----------------------
+# These stub the two impure fetchers so the decision logic is exercised with no
+# network. The stubs shadow the real functions after lib/helm.sh is sourced.
+
+@test "promotes head to the newest staging channel when staging is newer" {
+  fetch_dockerhub_date() { echo "2026-06-20"; }
+  fetch_index_dates() {
+    case "$1" in
+      rancher-latest) printf '%s\n' '0|2.14.2-rc1|2026-05-27T00:00:00Z' ;;
+      rancher-alpha) printf '%s\n' '0|2.14.3-alpha6|2026-06-26T00:00:00Z' ;;
+    esac
+  }
+  PREFER_STAGING=1 RANCHER_REPO=rancher-com-alpha RANCHER_IMAGE_TAG=head
+  freshness_maybe_promote
+  [ "$RANCHER_REPO" = "rancher-alpha" ]
+  [ "$RANCHER_IMAGE_TAG" = "v2.14.3-alpha6" ]
+}
+
+@test "keeps community when head is still the newest" {
+  fetch_dockerhub_date() { echo "2026-06-29"; }
+  fetch_index_dates() {
+    case "$1" in
+      rancher-latest) printf '%s\n' '0|2.14.2-rc1|2026-05-27T00:00:00Z' ;;
+      rancher-alpha) printf '%s\n' '0|2.14.3-alpha6|2026-06-26T00:00:00Z' ;;
+    esac
+  }
+  PREFER_STAGING=1 RANCHER_REPO=rancher-com-alpha RANCHER_IMAGE_TAG=head
+  freshness_maybe_promote
+  [ "$RANCHER_REPO" = "rancher-com-alpha" ]
+  [ "$RANCHER_IMAGE_TAG" = "head" ]
+}
+
+@test "an explicit concrete version pin is never promoted (override wins)" {
+  fetch_dockerhub_date() { echo "2000-01-01"; }
+  fetch_index_dates() { printf '%s\n' '0|9.9.9-alpha1|2099-01-01T00:00:00Z'; }
+  PREFER_STAGING=1 RANCHER_REPO=rancher-com-alpha RANCHER_IMAGE_TAG=2.14.2
+  freshness_maybe_promote
+  [ "$RANCHER_REPO" = "rancher-com-alpha" ]
+  [ "$RANCHER_IMAGE_TAG" = "2.14.2" ]
+}
+
+@test "the flag off leaves the backend untouched" {
+  fetch_dockerhub_date() { echo "2000-01-01"; }
+  fetch_index_dates() { printf '%s\n' '0|9.9.9-alpha1|2099-01-01T00:00:00Z'; }
+  PREFER_STAGING=false RANCHER_REPO=rancher-com-alpha RANCHER_IMAGE_TAG=head
+  freshness_maybe_promote
+  [ "$RANCHER_REPO" = "rancher-com-alpha" ]
+  [ "$RANCHER_IMAGE_TAG" = "head" ]
+}
+
+@test "a vX.Y-head tag restricts the staging race to that minor" {
+  fetch_dockerhub_date() { echo "2026-06-20"; }
+  fetch_index_dates() {
+    case "$1" in
+      rancher-latest) printf '%s\n' '0|2.14.2-rc1|2026-05-27T00:00:00Z' ;;
+      rancher-alpha) printf '%s\n' \
+        '0|2.16.0-alpha1|2026-06-28T00:00:00Z' \
+        '0|2.14.3-alpha6|2026-06-26T00:00:00Z' ;;
+    esac
+  }
+  PREFER_STAGING=1 RANCHER_REPO=rancher-com-rc RANCHER_IMAGE_TAG=v2.14-head
+  freshness_maybe_promote
+  [ "$RANCHER_REPO" = "rancher-alpha" ]
+  [ "$RANCHER_IMAGE_TAG" = "v2.14.3-alpha6" ]
 }

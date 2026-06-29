@@ -103,8 +103,13 @@ resolve_chart_version() {
       | grep "$vs" | grep -- "$filter" \
       | awk '{print $2}' | sort -V | tail -1 | tr -d '[:space:]'
   else
+    # No channel filter (prime / community stable / exact pin). A plain version
+    # like 2.13.3 must outrank its own pre-release/hotfix siblings (2.13.3-hotfix
+    # -751b.1), which a bare `sort -V` would rank higher. Prefix a stability key
+    # (1 = GA, 0 = pre-release) so GA wins for the same base, then sort by it.
     printf '%s\n' "$search" | grep "$vs" \
-      | awk '{print $2}' | sort -V | tail -1 | tr -d '[:space:]'
+      | awk '{ v=$2; stab=(v ~ /-/) ? "0" : "1"; print stab "|" v }' \
+      | sort -V -t'|' -k1,1 -k2,2 | tail -1 | cut -d'|' -f2 | tr -d '[:space:]'
   fi
 }
 
@@ -119,10 +124,136 @@ resolve_image_tag() {
   fi
 }
 
+# --- keep-fresh (freshness-aware promotion) ----------------------------------
+# When PREFER_STAGING is on and the requested tag is a rolling community head
+# tag (head or vX.Y-head), compare the community head image date against the
+# newest SUSE staging build and, when staging is newer, rewrite the backend to
+# that staging channel. A concrete version pin is an explicit override and is
+# never touched. The image registries involved are anonymously pullable, so no
+# credentials are required. Mirrors the date logic in list-rancher-versions.
+
+# index_rancher_dates - read a chart index.yaml on stdin, emit one
+# "stab|version|created" row per rancher chart entry (stab: 1 GA, 0 pre-release,
+# so GA outranks same-base pre-releases under sort -V). Pure.
+index_rancher_dates() {
+  awk '
+    /^  [a-zA-Z0-9_-]+:$/ { sub(/:$/, "", $1); chart=$1; next }
+    /^  - apiVersion:/ {
+      if (chart == "rancher" && ver != "") {
+        stab = (ver ~ /-/) ? "0" : "1"; print stab "|" ver "|" created
+      }
+      ver=""; created=""; next
+    }
+    /^    version:/ { ver=$2;     gsub(/"/, "", ver) }
+    /^    created:/ { created=$2; gsub(/"/, "", created) }
+    END {
+      if (chart == "rancher" && ver != "") {
+        stab = (ver ~ /-/) ? "0" : "1"; print stab "|" ver "|" created
+      }
+    }
+  '
+}
+
+# newest_dated <version_regex> <prerelease_filter> - read "stab|version|created"
+# rows on stdin, keep those whose version matches <version_regex> (empty = any)
+# and contains <prerelease_filter> (empty = any), and print "version|YYYY-MM-DD"
+# of the newest (sort -V on stab then version). Pure.
+newest_dated() {
+  local vre="$1" filter="$2" rows
+  rows="$(cat)"
+  [ -n "$vre" ] && rows="$(printf '%s\n' "$rows" | grep -E "^[01][|]${vre}" || true)"
+  [ -n "$filter" ] && rows="$(printf '%s\n' "$rows" | grep -- "$filter" || true)"
+  [ -n "$rows" ] || return 0
+  printf '%s\n' "$rows" | sort -V -t'|' -k1,1 -k2,2 | tail -1 \
+    | awk -F'|' '{ d=$3; sub(/T.*/, "", d); print $2 "|" d }'
+}
+
+# parse_dockerhub_date <json_text> - extract the last_updated date (YYYY-MM-DD)
+# from a Docker Hub tag API response. Pure.
+parse_dockerhub_date() {
+  printf '%s' "$1" | grep -oE '"last_updated":"[^"]+"' | head -1 \
+    | sed -E 's/.*:"([^T]+)T.*/\1/'
+}
+
+# _freshness_curl <url> - GET a URL with the system CA bundle, quiet on failure.
+_freshness_curl() {
+  local url="$1" ca
+  local -a args=(-fsSL)
+  ca="$(ca_bundle)"
+  [ -n "$ca" ] && args+=(--cacert "$ca")
+  curl "${args[@]}" "$url" 2>/dev/null
+}
+
+# fetch_index_dates <channel> - download a channel index.yaml and parse it.
+fetch_index_dates() {
+  _freshness_curl "$(repo_url "$1")/index.yaml" | index_rancher_dates
+}
+
+# fetch_dockerhub_date <tag> - resolve a Docker Hub rancher/rancher tag date.
+fetch_dockerhub_date() {
+  parse_dockerhub_date \
+    "$(_freshness_curl "https://hub.docker.com/v2/repositories/rancher/rancher/tags/$1")"
+}
+
+# freshness_maybe_promote - the gated promotion. No-op unless PREFER_STAGING is
+# truthy and the tag is a rolling head tag. Rewrites RANCHER_REPO and
+# RANCHER_IMAGE_TAG in place when the newest staging build outdates head.
+freshness_maybe_promote() {
+  is_true "${PREFER_STAGING:-}" || return 0
+  case "$RANCHER_IMAGE_TAG" in
+    head | *-head) ;;
+    *) return 0 ;;
+  esac
+
+  local minor vre
+  minor="$(version_string "$RANCHER_IMAGE_TAG")"
+  if [ "$minor" = head ]; then
+    vre=""
+  else
+    vre="$(printf '%s' "$minor" | sed 's/\./[.]/g')([.]|-)"
+  fi
+
+  local head_date
+  head_date="$(fetch_dockerhub_date "$RANCHER_IMAGE_TAG")"
+  if [ -z "$head_date" ]; then
+    log_warn "keep-fresh: no Docker Hub date for '$RANCHER_IMAGE_TAG'; keeping community"
+    return 0
+  fi
+
+  local best_ch="" best_ver="" best_date="" ch rows pick ver date filter
+  for ch in rancher-latest rancher-alpha; do
+    case "$ch" in
+      rancher-latest) filter="-rc" ;;
+      rancher-alpha) filter="-alpha" ;;
+    esac
+    rows="$(fetch_index_dates "$ch" || true)"
+    [ -n "$rows" ] || continue
+    pick="$(printf '%s\n' "$rows" | newest_dated "$vre" "$filter")"
+    [ -n "$pick" ] || continue
+    ver="${pick%%|*}"
+    date="${pick#*|}"
+    if [ -z "$best_date" ] || [ "$date" \> "$best_date" ]; then
+      best_ch="$ch"
+      best_ver="$ver"
+      best_date="$date"
+    fi
+  done
+
+  if [ -n "$best_date" ] && [ "$best_date" \> "$head_date" ]; then
+    log_info "keep-fresh: PROMOTE community -> ${best_ch} (${best_ver}, ${best_date} newer than ${RANCHER_IMAGE_TAG} ${head_date})"
+    RANCHER_REPO="$best_ch"
+    RANCHER_IMAGE_TAG="v${best_ver}"
+    export RANCHER_REPO RANCHER_IMAGE_TAG
+  else
+    log_info "keep-fresh: community ${RANCHER_IMAGE_TAG} (${head_date}) still newest (staging best ${best_date:-none}); no change"
+  fi
+}
+
 # helm_resolve_version - orchestrate the impure resolution against a live helm.
 # Validates RANCHER_REPO, adds/updates the repo, runs the search, and exports:
 #   RANCHER_CHART_URL RANCHER_IMAGE RANCHER_CHART_VERSION RANCHER_IMAGE_TAG_RESOLVED
 helm_resolve_version() {
+  freshness_maybe_promote
   local repo="${RANCHER_REPO:?RANCHER_REPO is required}"
   local tag="${RANCHER_IMAGE_TAG:?RANCHER_IMAGE_TAG is required}"
   repo_valid "$repo" || die "unknown RANCHER_REPO '$repo' (valid: $(repo_keys))"

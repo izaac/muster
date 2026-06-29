@@ -50,6 +50,12 @@ Flags:
                                     rancher-community|rancher-com-rc|rancher-com-alpha.
   --version <tag>                   Image tag: head or a version like 2.13 /
                                     2.13.4-rc1 (default: head).
+  --prefer-staging                  Keep-fresh: when the tag is a rolling head
+                                    tag (head / vX.Y-head) and the newest SUSE
+                                    staging build (rancher-latest/-alpha) is
+                                    newer by date, auto-promote the backend to
+                                    it. A concrete --version pin always wins.
+                                    Also honoured via PREFER_STAGING env.
   --password <secret>               Rancher bootstrap/admin password (default:
                                     RANCHER_PASSWORD env, else password1234).
   --out <env|cypress|json>          Handoff format (default: env).
@@ -83,6 +89,7 @@ INSTANCE="${INSTANCE:-e2e}"
 EXTERNAL="${EXTERNAL:-false}"
 RANCHER_REPO="${RANCHER_REPO:-rancher-com-alpha}"
 RANCHER_IMAGE_TAG="${RANCHER_IMAGE_TAG:-head}"
+PREFER_STAGING="${PREFER_STAGING:-false}"
 RANCHER_PASSWORD="${RANCHER_PASSWORD:-password1234}"
 OUT="${OUT:-env}"
 DASHBOARD_SRC="${DASHBOARD_SRC:-}"
@@ -133,6 +140,10 @@ while [ $# -gt 0 ]; do
     --repo)
       RANCHER_REPO="${2:?--repo needs a value}"
       shift 2
+      ;;
+    --prefer-staging)
+      PREFER_STAGING="true"
+      shift
       ;;
     --password)
       RANCHER_PASSWORD="${2:?--password needs a value}"
@@ -196,6 +207,7 @@ case "$RANCHER_REPO" in
 esac
 
 export INSTANCE EXTERNAL RANCHER_REPO RANCHER_IMAGE_TAG OUT RANCHER_PASSWORD
+export PREFER_STAGING
 export DASHBOARD_SRC DASHBOARD_DIST DASHBOARD_BRANCH NODE_BIN KUBECONFIG RANCHER_HOST
 
 load_core() {

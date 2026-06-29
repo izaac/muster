@@ -321,3 +321,31 @@ setup() {
   [ "$RANCHER_REPO" = "rancher-alpha" ]
   [ "$RANCHER_IMAGE_TAG" = "v2.14.3-alpha6" ]
 }
+@test "a same-day staging build is a tie and keeps community" {
+  fetch_dockerhub_date() { echo "2026-06-26"; }
+  fetch_index_dates() {
+    case "$1" in
+      rancher-latest) printf '%s\n' '0|2.14.2-rc1|2026-05-27T00:00:00Z' ;;
+      rancher-alpha) printf '%s\n' '0|2.14.3-alpha6|2026-06-26T09:30:00Z' ;;
+    esac
+  }
+  PREFER_STAGING=1 RANCHER_REPO=rancher-com-alpha RANCHER_IMAGE_TAG=head
+  freshness_maybe_promote
+  [ "$RANCHER_REPO" = "rancher-com-alpha" ]
+  [ "$RANCHER_IMAGE_TAG" = "head" ]
+}
+
+@test "promotion announces PROMOTE in the log" {
+  fetch_dockerhub_date() { echo "2026-06-20"; }
+  fetch_index_dates() {
+    case "$1" in
+      rancher-latest) printf '%s\n' '0|2.14.2-rc1|2026-05-27T00:00:00Z' ;;
+      rancher-alpha) printf '%s\n' '0|2.14.3-alpha6|2026-06-26T00:00:00Z' ;;
+    esac
+  }
+  PREFER_STAGING=1 RANCHER_REPO=rancher-com-alpha RANCHER_IMAGE_TAG=head
+  run freshness_maybe_promote
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"PROMOTE community -> rancher-alpha"* ]]
+  [[ "$output" == *"2.14.3-alpha6"* ]]
+}

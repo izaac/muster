@@ -239,7 +239,11 @@ freshness_maybe_promote() {
     fi
   done
 
-  if [ -n "$best_date" ] && [ "$best_date" \> "$head_date" ]; then
+  # head_date is a bare YYYY-MM-DD (Docker Hub last_updated, truncated at T);
+  # the chart created field is a full ISO timestamp. Compare on the date part
+  # only so a same-day staging build is a tie (kept community), not a win.
+  local best_day="${best_date%%T*}"
+  if [ -n "$best_date" ] && [ "$best_day" \> "$head_date" ]; then
     log_info "keep-fresh: PROMOTE community -> ${best_ch} (${best_ver}, ${best_date} newer than ${RANCHER_IMAGE_TAG} ${head_date})"
     RANCHER_REPO="$best_ch"
     RANCHER_IMAGE_TAG="v${best_ver}"

@@ -79,3 +79,86 @@ true
   [ "$status" -eq 0 ]
   [ "$output" = "$tmp" ]
 }
+
+# --- is_rootless_podman_sock -------------------------------------------------
+
+@test "is_rootless_podman_sock matches per-user runtime sockets" {
+  run is_rootless_podman_sock /run/user/1000/podman/podman.sock
+  [ "$status" -eq 0 ]
+}
+
+@test "is_rootless_podman_sock rejects the system socket" {
+  run is_rootless_podman_sock /run/podman/podman.sock
+  [ "$status" -ne 0 ]
+}
+
+# --- is_podman_host ----------------------------------------------------------
+
+@test "is_podman_host is true when DOCKER_HOST names a podman socket" {
+  is_podman_cli() { return 1; }
+  DOCKER_HOST="unix:///run/user/1000/podman/podman.sock" run is_podman_host
+  [ "$status" -eq 0 ]
+}
+
+@test "is_podman_host is false for real docker (no shim, non-podman host)" {
+  is_podman_cli() { return 1; }
+  DOCKER_HOST="unix:///var/run/docker.sock" run is_podman_host
+  [ "$status" -ne 0 ]
+}
+
+# --- resolve_docker_host -----------------------------------------------------
+
+# Bind a real AF_UNIX socket so the [ -S ] probe passes.
+_mk_sock() {
+  local path="$1"
+  python3 - "$path" <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.bind(sys.argv[1])
+PY
+}
+
+@test "resolve_docker_host switches a rootless DOCKER_HOST to the rootful socket" {
+  is_podman_host() { return 0; }
+  local d; d="$(mktemp -d)"
+  _mk_sock "$d/rootful.sock"
+  export DOCKER_HOST="unix:///run/user/1000/podman/podman.sock"
+  MUSTER_ROOTFUL_SOCK="$d/rootful.sock" resolve_docker_host
+  [ "$DOCKER_HOST" = "unix://$d/rootful.sock" ]
+  rm -rf "$d"
+}
+
+@test "resolve_docker_host adopts the rootful socket when DOCKER_HOST is unset" {
+  is_podman_host() { return 0; }
+  local d; d="$(mktemp -d)"
+  _mk_sock "$d/rootful.sock"
+  unset DOCKER_HOST
+  MUSTER_ROOTFUL_SOCK="$d/rootful.sock" resolve_docker_host
+  [ "$DOCKER_HOST" = "unix://$d/rootful.sock" ]
+  rm -rf "$d"
+}
+
+@test "resolve_docker_host leaves an explicit rootful endpoint untouched" {
+  is_podman_host() { return 0; }
+  export DOCKER_HOST="unix:///run/podman/podman.sock"
+  resolve_docker_host
+  [ "$DOCKER_HOST" = "unix:///run/podman/podman.sock" ]
+}
+
+@test "resolve_docker_host is a no-op on a real docker host" {
+  is_podman_host() { return 1; }
+  export DOCKER_HOST="unix:///var/run/docker.sock"
+  resolve_docker_host
+  [ "$DOCKER_HOST" = "unix:///var/run/docker.sock" ]
+}
+
+@test "resolve_docker_host dies when a podman host has no rootful socket" {
+  is_podman_host() { return 0; }
+  local d; d="$(mktemp -d)"
+  run env MUSTER_ROOTFUL_SOCK="$d/missing.sock" \
+    DOCKER_HOST="unix:///run/user/1000/podman/podman.sock" \
+    bash -c '. "'"$ROOT"'/lib/util.sh"; is_podman_host() { return 0; }; resolve_docker_host'
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"rootful socket"* ]]
+  rm -rf "$d"
+}

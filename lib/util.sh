@@ -127,6 +127,59 @@ container_cli() {
   fi
 }
 
+# is_podman_cli - true when the `docker` command is really a Podman shim (the
+# binary resolves to podman, or `docker --version` reports Podman). A host with
+# genuine Docker returns false. Used to keep socket resolution off real Docker.
+is_podman_cli() {
+  command -v docker >/dev/null 2>&1 || return 1
+  local real
+  real="$(readlink -f "$(command -v docker)" 2>/dev/null || true)"
+  case "$real" in
+    *podman*) return 0 ;;
+  esac
+  docker --version 2>/dev/null | grep -qi podman
+}
+
+# is_podman_host - true when muster is driving Podman rather than real Docker,
+# detected either through the `docker` shim or a podman socket already in
+# DOCKER_HOST. Real Docker hosts (no shim, non-podman DOCKER_HOST) return false.
+is_podman_host() {
+  is_podman_cli && return 0
+  case "${DOCKER_HOST:-}" in
+    *podman*) return 0 ;;
+  esac
+  return 1
+}
+
+# resolve_docker_host - on a Podman host, point DOCKER_HOST at the rootful socket
+# so k3d, and Rancher's jailer (which creates device nodes a rootless user
+# namespace cannot), talk to the privileged daemon. Both a per-user (rootless)
+# and a system (rootful) socket commonly exist, and the default DOCKER_HOST often
+# points at the unusable rootless one. Cases:
+#   - DOCKER_HOST unset      -> adopt the rootful socket.
+#   - DOCKER_HOST rootless    -> override to rootful (rootless cannot run Rancher).
+#   - anything else (explicit rootful, real Docker, tcp://) -> left untouched.
+# No-op on real Docker hosts, so the Docker path is never altered. Dies when a
+# Podman host has no rootful socket enabled. MUSTER_ROOTFUL_SOCK overrides the
+# rootful socket path (default /run/podman/podman.sock).
+resolve_docker_host() {
+  is_podman_host || return 0
+  case "${DOCKER_HOST:-}" in
+    "") : ;;
+    *run/user/*)
+      log_info "podman rootless socket in DOCKER_HOST; switching to rootful (Rancher's jailer needs root)"
+      ;;
+    *) return 0 ;;
+  esac
+  local rootful="${MUSTER_ROOTFUL_SOCK:-/run/podman/podman.sock}"
+  if [ -S "$rootful" ]; then
+    export DOCKER_HOST="unix://$rootful"
+    log_info "podman: using rootful socket $DOCKER_HOST"
+  else
+    die "podman host needs the rootful socket. Enable it (e.g. sudo systemctl enable --now podman.socket) or set DOCKER_HOST to a usable endpoint."
+  fi
+}
+
 # --- retries -----------------------------------------------------------------
 
 # retry <attempts> <sleep_s> <description> [--] <command...>

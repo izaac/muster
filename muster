@@ -231,6 +231,12 @@ load_core() {
   . "$MUSTER_HOME/lib/node.sh"
   # shellcheck source=/dev/null
   . "$MUSTER_HOME/drivers/${PROVIDER}.sh"
+  # k3d and the docker standalone driver both drive a local container daemon; on
+  # a Podman host point DOCKER_HOST at the rootful socket before any driver call.
+  # The existing provider talks to a remote Rancher and needs no local daemon.
+  case "$PROVIDER" in
+    k3d | docker) resolve_docker_host ;;
+  esac
 }
 
 # High-level command flows are assembled in Phase 1+ as the libs land.

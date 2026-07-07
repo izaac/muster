@@ -157,14 +157,23 @@ driver_gate() {
 
 # driver_settle - optional quiescence check mirroring k3d's, against the
 # rancher container CPU so the test phase does not race boot-time churn.
+#
+# `docker stats` reports CPUPerc normalised so that 100% == one full core; on a
+# multi-core host it can far exceed 100%. Divide by the number of cores the
+# container sees to get a node-utilisation percentage, so the threshold means
+# "fraction of the whole node" and does not stall on a fraction of one core.
 driver_settle() {
   local threshold=50 settle_samples=3 sample_interval=10 max_attempts=30
   local low_streak=0 cpu i
   local node="muster-docker-${INSTANCE}"
+  local ncpu
+  ncpu=$(docker exec "$node" nproc 2>/dev/null || nproc 2>/dev/null || echo 1)
+  [ "${ncpu:-0}" -ge 1 ] 2>/dev/null || ncpu=1
   for ((i = 1; i <= max_attempts; i++)); do
     cpu=$(docker stats --no-stream --format '{{.CPUPerc}}' "$node" 2>/dev/null \
       | tr -d '%' | cut -d. -f1)
     cpu=${cpu:-0}
+    cpu=$((cpu / ncpu))
     if [ "$cpu" -lt "$threshold" ]; then
       low_streak=$((low_streak + 1))
       log_info "  cpu=${cpu}% (low ${low_streak}/${settle_samples})"

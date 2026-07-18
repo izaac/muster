@@ -37,7 +37,7 @@ RANCHER_IMAGE_TAG="head"
 RANCHER_PASSWORD="password1234"
 
 # CERT_MANAGER_VERSION: cert-manager chart version (upstream parity).
-CERT_MANAGER_VERSION="v1.7.1"
+CERT_MANAGER_VERSION="v1.16.2"
 
 # K3S_IMAGE: k3d node image (k3d provider only).
 K3S_IMAGE="rancher/k3s:v1.33.1-k3s1"

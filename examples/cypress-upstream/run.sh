@@ -82,6 +82,10 @@ export TEST_BASE_URL API TEST_USERNAME CATTLE_BOOTSTRAP_PASSWORD TEST_PASSWORD
 export HOST_UID="${HOST_UID:-$(id -u)}"
 export HOST_GID="${HOST_GID:-$(id -g)}"
 
+if ! docker network inspect "k3d-$INSTANCE" >/dev/null 2>&1; then
+  docker network create "k3d-$INSTANCE" >/dev/null 2>&1 || true
+fi
+
 echo "--- Running Cypress setup (first-login) ---"
 echo "    TEST_BASE_URL=$TEST_BASE_URL"
 echo "    CYPRESS_BROWSER=$CYPRESS_BROWSER"

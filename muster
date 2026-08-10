@@ -39,6 +39,7 @@ Commands:
   wait      Run readiness gates against an existing instance.
   tunnel    Manage the cloudflared quick tunnel (external mode).
   warmup    Prime the provisioning controller to avoid the cold-start flake.
+  mirror    Copy the images an airgapped install needs into a registry.
   down      Tear down the cluster and sweep tunnel + substrate state.
   env       Print the consumer handoff for the current instance.
   show      Print the resolved configuration (after config file + flags).
@@ -57,6 +58,19 @@ Flags:
                                     2.13.4-rc1 (default: head).
   --dry-run                         Resolve and print the chart, image and
                                     whether the image is Prime; create nothing.
+  --registry <host[:port]>          Target registry for `mirror`, and the
+                                    private registry an airgapped install pulls
+                                    from.
+  --mirror-all                      Mirror the whole published image list
+                                    instead of the core set a Rancher server
+                                    needs to serve its UI.
+  --mirror-extension                Also mirror the K3K images the
+                                    virtual-clusters extension needs.
+  --k3k-version <tag>               K3K version to mirror (implies
+                                    --mirror-extension). Defaults to the newest
+                                    K3K release.
+  --insecure-registry               Skip TLS verification against the target
+                                    registry (a plain local registry).
   --prefer-staging                  Keep-fresh: when the tag is a rolling head
                                     tag (head / vX.Y-head) and the newest SUSE
                                     staging build (rancher-latest/-alpha) is
@@ -98,6 +112,11 @@ RANCHER_REPO="${RANCHER_REPO:-rancher-com-alpha}"
 RANCHER_IMAGE_TAG="${RANCHER_IMAGE_TAG:-head}"
 PREFER_STAGING="${PREFER_STAGING:-false}"
 DRY_RUN="${DRY_RUN:-false}"
+MIRROR_REGISTRY="${MIRROR_REGISTRY:-}"
+MIRROR_ALL="${MIRROR_ALL:-false}"
+MIRROR_EXTENSION="${MIRROR_EXTENSION:-false}"
+MIRROR_K3K_TAG="${MIRROR_K3K_TAG:-}"
+MIRROR_INSECURE="${MIRROR_INSECURE:-false}"
 RANCHER_PASSWORD="${RANCHER_PASSWORD:-password1234}"
 OUT="${OUT:-env}"
 DASHBOARD_SRC="${DASHBOARD_SRC:-}"
@@ -155,6 +174,27 @@ while [ $# -gt 0 ]; do
       ;;
     --dry-run)
       DRY_RUN="true"
+      shift
+      ;;
+    --registry)
+      MIRROR_REGISTRY="${2:?--registry needs a value}"
+      shift 2
+      ;;
+    --mirror-all)
+      MIRROR_ALL="true"
+      shift
+      ;;
+    --mirror-extension)
+      MIRROR_EXTENSION="true"
+      shift
+      ;;
+    --k3k-version)
+      MIRROR_K3K_TAG="${2:?--k3k-version needs a value}"
+      MIRROR_EXTENSION="true"
+      shift 2
+      ;;
+    --insecure-registry)
+      MIRROR_INSECURE="true"
       shift
       ;;
     --password)
@@ -218,6 +258,7 @@ repo_valid "$RANCHER_REPO" \
 
 export INSTANCE EXTERNAL RANCHER_REPO RANCHER_IMAGE_TAG OUT RANCHER_PASSWORD
 export PREFER_STAGING DRY_RUN
+export MIRROR_REGISTRY MIRROR_ALL MIRROR_EXTENSION MIRROR_INSECURE MIRROR_K3K_TAG
 export DASHBOARD_SRC DASHBOARD_DIST DASHBOARD_BRANCH NODE_BIN KUBECONFIG RANCHER_HOST
 
 load_core() {
@@ -243,6 +284,8 @@ load_core() {
   . "$MUSTER_HOME/lib/branches.sh"
   # shellcheck source=lib/plan.sh
   . "$MUSTER_HOME/lib/plan.sh"
+  # shellcheck source=lib/mirror.sh
+  . "$MUSTER_HOME/lib/mirror.sh"
   # shellcheck source=/dev/null
   . "$MUSTER_HOME/drivers/${PROVIDER}.sh"
   # k3d and the docker standalone driver both drive a local container daemon; on
@@ -354,6 +397,11 @@ EOF
   warmup)
     load_core
     cmd_warmup
+    ;;
+  mirror)
+    load_core
+    [ -n "$MIRROR_REGISTRY" ] || die "mirror needs --registry <host[:port]>"
+    mirror_run "$MIRROR_REGISTRY"
     ;;
   down)
     load_core

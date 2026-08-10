@@ -299,8 +299,10 @@ image_exists() {
 # so a typo is not mistaken for an unreadable image.
 image_prime_flavour() {
   local image="${1:?image required}" tag="${2:?tag required}" cfg
+  local -a tls=()
+  is_true "${MUSTER_REGISTRY_INSECURE:-}" && tls=(--tls-verify=false)
   if command -v skopeo >/dev/null 2>&1; then
-    if cfg="$(skopeo inspect --config "docker://${image}:${tag}" 2>/dev/null)"; then
+    if cfg="$(skopeo inspect --config "${tls[@]}" "docker://${image}:${tag}" 2>/dev/null)"; then
       case "$cfg" in
         *'"RANCHER_VERSION_TYPE=prime"'*) printf 'prime' ;;
         *) printf 'community' ;;

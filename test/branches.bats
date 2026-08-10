@@ -123,8 +123,9 @@ _parse_junk() { printf 'not json at all\n' | branches_parse master; }
 
 @test "branches_k3s_image maps a rancher tag to the k3s image for that line" {
   branches_fetch() { printf '%s' "$FIXTURE"; }
-  [ "$(branches_k3s_image head)" = "rancher/k3s:v1.35.2+k3s1" ]
-  [ "$(branches_k3s_image v2.15-head)" = "rancher/k3s:v1.35.2+k3s1" ]
+  # the "+" of a Kubernetes version is not legal in an image tag
+  [ "$(branches_k3s_image head)" = "rancher/k3s:v1.35.2-k3s1" ]
+  [ "$(branches_k3s_image v2.15-head)" = "rancher/k3s:v1.35.2-k3s1" ]
 }
 
 @test "branches_k3s_image yields nothing when the branch has no kube version" {
@@ -144,7 +145,7 @@ _parse_junk() { printf 'not json at all\n' | branches_parse master; }
   branches_fetch() { printf '%s' "$FIXTURE"; }
   unset K3S_IMAGE
   RANCHER_IMAGE_TAG=v2.15-head branches_apply_k3s_image
-  [ "$K3S_IMAGE" = "rancher/k3s:v1.35.2+k3s1" ]
+  [ "$K3S_IMAGE" = "rancher/k3s:v1.35.2-k3s1" ]
 }
 
 @test "an explicit K3S_IMAGE always wins" {

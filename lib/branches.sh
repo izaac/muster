@@ -94,13 +94,17 @@ branches_fetch() {
 #
 # Testing the UI on a different Kubernetes version than the suite was written
 # against is a needless source of divergence, so prefer their pin over ours.
+#
+# A Kubernetes version carries its build metadata after a "+" (v1.35.2+k3s1),
+# which is not a legal character in an image tag, so the published image uses a
+# "-" instead. Translate rather than asking for a tag that cannot exist.
 branches_k3s_image() {
   local tag="${1:?tag required}" branch ver
   branch="$(ui_branch_from_tag "$tag" 2>/dev/null)" || return 0
   [ -n "$branch" ] || return 0
   ver="$(branches_field "$branch" KUBE_VERSION)"
   [ -n "$ver" ] || return 0
-  printf 'rancher/k3s:%s' "$ver"
+  printf 'rancher/k3s:%s' "${ver//+/-}"
 }
 
 # branches_apply_k3s_image - set K3S_IMAGE from the metadata when the caller has

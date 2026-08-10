@@ -48,19 +48,110 @@ muster up --provider k3d --repo rancher-prime --version 2.13.4
 # GA prime from registry.rancher.com, no credentials needed
 muster up --provider k3d --repo rancher-prime-ga --version 2.14.4
 
+# Resolve and print the chart, image and whether it is Prime; create nothing
+muster up --dry-run --repo rancher-alpha --version 2.15
+
 # Rolling head from the community alpha channel (default)
 muster up --provider k3d --repo rancher-com-alpha --version head
 ```
 
-Channels: `rancher-prime`, `rancher-prime-ga`, `rancher-latest`,
-`rancher-alpha`, `rancher-community`, `rancher-com-rc`, `rancher-com-alpha`
-(default). The alpha/rc staging channels publish freely pullable images and are
-the happy path for testing; `rancher-prime` is gated, `rancher-prime-ga` is not.
+### Channels
 
-Only prime images report themselves as Prime, which is what gates Prime-only UI
-extensions. Use `rancher-prime-ga` for a GA prime build without credentials, or
-`rancher-alpha` for a prime prerelease — on the staging channels only the alpha
-builds carry the marker, the `-head` and `-rcs-` builds report as community.
+| `--repo` | Chart repository | Image | Notes |
+|---|---|---|---|
+| `rancher-prime` | `charts.rancher.com/server-charts/prime` | `registry.suse.com/rancher/rancher` | GA prime. |
+| `rancher-prime-ga` | `charts.rancher.com/server-charts/prime` | `registry.rancher.com/rancher/rancher` | Same charts, prime images without credentials. |
+| `rancher-latest` | `charts.optimus.rancher.io/server-charts/latest` | `stgregistry.suse.com/rancher/rancher` | Release candidates. |
+| `rancher-alpha` | `charts.optimus.rancher.io/server-charts/alpha` | `stgregistry.suse.com/rancher/rancher` | Alphas; the newest builds of an unreleased line. |
+| `rancher-com-rc` | `releases.rancher.com/server-charts/latest` | Docker Hub `rancher/rancher` | Community RC line. |
+| `rancher-com-alpha` | `releases.rancher.com/server-charts/alpha` | Docker Hub `rancher/rancher` | Community alpha line. Default. |
+| `rancher-community` | `releases.rancher.com/server-charts/stable` | Docker Hub `rancher/rancher` | Community stable. |
+
+The staging channels publish freely pullable images and are the usual choice for
+testing.
+
+Two things about this table are not fixed and should not be relied on:
+
+- **Prime is a property of the image, not of the channel.** Whether a build
+  reports itself as Prime is what gates Prime-only UI extensions, and some tags
+  served from a prime registry are community builds. Read it off the image with
+  `--dry-run` rather than inferring it from the registry or the tag shape.
+- **A release line reaches Docker Hub only up to a certain patch.** Later
+  patches ship to the prime registries alone, so a version that exists may still
+  be unreachable on a community channel. muster says so when that is why a
+  lookup failed:
+
+  ```
+  $ muster up --dry-run --repo rancher-com-rc --version 2.14.4
+  [muster] ERROR newest in rancher-com-rc: 2.15.0-rc1 ... 2.15.0-rc5
+  [muster] ERROR Docker Hub carries the 2.14 line only up to 2.14.3; later
+           patches go to the prime registries only. Try --repo rancher-prime-ga,
+           or rancher-latest for a pre-release.
+  [muster] ERROR no chart version in rancher-com-rc matches '2.14.4'
+  ```
+
+## Checking a version before running it
+
+`--dry-run` answers "which build is this, and is it Prime" without creating
+anything. It runs the same resolution the install does, so what it prints is
+what a real run would use:
+
+```sh
+muster up --dry-run --repo rancher-prime-ga --version 2.14.4
+```
+
+```
+[muster] plan only; nothing will be created
+  provider         k3d
+  instance         e2e
+  external         false
+  channel          rancher-prime-ga
+  chart repo       https://charts.rancher.com/server-charts/prime
+  chart version    2.14.4
+  image            registry.rancher.com/rancher/rancher:v2.14.4
+  flavour          prime  (Prime-only UI extensions will load)
+  k3s image        driver default
+  agent TLS        chart default
+```
+
+`flavour` is read from the image itself, not guessed:
+
+| Value | Meaning |
+|---|---|
+| `prime` | Reports itself as Prime; Prime-only UI extensions will load. |
+| `community` | Not a Prime build; Prime-only UI extensions will not load. |
+| `missing` | That tag is not published in that registry. |
+| `unknown` | Could not read the image (skopeo absent, or registry unreachable). |
+
+Comparing channels before committing to one:
+
+```sh
+for repo in rancher-prime-ga rancher-latest rancher-alpha rancher-com-rc; do
+  muster up --dry-run --repo "$repo" --version 2.14
+done
+```
+
+```
+rancher-prime-ga   registry.rancher.com/rancher/rancher:v2.14.4        prime
+rancher-latest     stgregistry.suse.com/rancher/rancher:v2.14.4-rc1    prime
+rancher-alpha      stgregistry.suse.com/rancher/rancher:v2.14.4-alpha7 prime
+rancher-com-rc     no chart version matches (2.14 stops at 2.14.3 on Docker Hub)
+```
+
+`--dry-run` also runs the image preflight, so a tag that does not exist fails
+here in a second or two rather than after the rollout wait has timed out.
+
+## Kubernetes version
+
+With `--provider k3d` and no `K3S_IMAGE` set, the k3d node image comes from
+[`branches-metadata.json`](https://github.com/rancher/dashboard/blob/master/branches-metadata.json)
+in `rancher/dashboard`, for the release line implied by `--version`. That is the
+same Kubernetes version the dashboard team runs E2E on, so the UI is exercised
+against what its suite was written for rather than a version that drifted.
+
+An explicit `K3S_IMAGE` always wins, `MUSTER_IGNORE_BRANCH_METADATA=1` skips the
+lookup, and an unreachable file or a branch without a pinned version quietly
+leaves the built-in default. The lookup never fails a run.
 
 To list the chart/image combinations available for a minor across every
 channel, use

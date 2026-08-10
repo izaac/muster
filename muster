@@ -20,6 +20,10 @@ export MUSTER_HOME
 
 # shellcheck source=lib/util.sh
 . "$MUSTER_HOME/lib/util.sh"
+# Sourced before flag parsing so the channel map validates --repo; it declares
+# functions and maps only, and its include guard makes the later load a no-op.
+# shellcheck source=lib/helm.sh
+. "$MUSTER_HOME/lib/helm.sh"
 install_err_trap
 
 usage() {
@@ -51,6 +55,8 @@ Flags:
                                     rancher-com-alpha.
   --version <tag>                   Image tag: head or a version like 2.13 /
                                     2.13.4-rc1 (default: head).
+  --dry-run                         Resolve and print the chart, image and
+                                    whether the image is Prime; create nothing.
   --prefer-staging                  Keep-fresh: when the tag is a rolling head
                                     tag (head / vX.Y-head) and the newest SUSE
                                     staging build (rancher-latest/-alpha) is
@@ -91,6 +97,7 @@ EXTERNAL="${EXTERNAL:-false}"
 RANCHER_REPO="${RANCHER_REPO:-rancher-com-alpha}"
 RANCHER_IMAGE_TAG="${RANCHER_IMAGE_TAG:-head}"
 PREFER_STAGING="${PREFER_STAGING:-false}"
+DRY_RUN="${DRY_RUN:-false}"
 RANCHER_PASSWORD="${RANCHER_PASSWORD:-password1234}"
 OUT="${OUT:-env}"
 DASHBOARD_SRC="${DASHBOARD_SRC:-}"
@@ -144,6 +151,10 @@ while [ $# -gt 0 ]; do
       ;;
     --prefer-staging)
       PREFER_STAGING="true"
+      shift
+      ;;
+    --dry-run)
+      DRY_RUN="true"
       shift
       ;;
     --password)
@@ -202,13 +213,11 @@ case "$OUT" in
   env | cypress | json) ;;
   *) die "unknown --out: $OUT (env|cypress|json)" ;;
 esac
-case "$RANCHER_REPO" in
-  rancher-prime | rancher-latest | rancher-alpha | rancher-community | rancher-com-rc | rancher-com-alpha) ;;
-  *) die "unknown --repo: $RANCHER_REPO (rancher-prime|rancher-latest|rancher-alpha|rancher-community|rancher-com-rc|rancher-com-alpha)" ;;
-esac
+repo_valid "$RANCHER_REPO" \
+  || die "unknown --repo: $RANCHER_REPO ($(repo_keys | tr -s ' ' '|' | sed 's/|$//'))"
 
 export INSTANCE EXTERNAL RANCHER_REPO RANCHER_IMAGE_TAG OUT RANCHER_PASSWORD
-export PREFER_STAGING
+export PREFER_STAGING DRY_RUN
 export DASHBOARD_SRC DASHBOARD_DIST DASHBOARD_BRANCH NODE_BIN KUBECONFIG RANCHER_HOST
 
 load_core() {
@@ -230,6 +239,10 @@ load_core() {
   . "$MUSTER_HOME/lib/buildui.sh"
   # shellcheck source=lib/node.sh
   . "$MUSTER_HOME/lib/node.sh"
+  # shellcheck source=lib/branches.sh
+  . "$MUSTER_HOME/lib/branches.sh"
+  # shellcheck source=lib/plan.sh
+  . "$MUSTER_HOME/lib/plan.sh"
   # shellcheck source=/dev/null
   . "$MUSTER_HOME/drivers/${PROVIDER}.sh"
   # k3d and the docker standalone driver both drive a local container daemon; on
@@ -242,6 +255,10 @@ load_core() {
 
 # High-level command flows are assembled in Phase 1+ as the libs land.
 cmd_up() {
+  if is_true "${DRY_RUN:-}"; then
+    plan_report
+    return 0
+  fi
   if [ "$PROVIDER" = existing ] && is_true "${EXTERNAL:-}"; then
     die "existing provider does not support --external (RANCHER_HOST is already reachable)"
   fi
@@ -251,6 +268,7 @@ cmd_up() {
     export EXTERNAL_HOSTNAME="${tunnel_url#https://}"
   fi
 
+  branches_apply_k3s_image
   driver_up
   local kc host
   kc="$(driver_kubeconfig)"

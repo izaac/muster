@@ -34,6 +34,8 @@ _muster() {
     '--kubeconfig[Kubeconfig for the target cluster]:file:_files' \
     '--rancher-host[Hostname Rancher is served at]:host:' \
     '--config[Config file to source]:file:_files' \
+    '--dry-run[Resolve and print the plan; create nothing]' \
+    '--prefer-staging[Promote a rolling head tag to a newer staging build]' \
     '(-h --help)'{-h,--help}'[Show help]' \
     '1:command:->command' \
     '*::arg:->args'

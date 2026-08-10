@@ -478,3 +478,143 @@ _helm_args_for_external() {
   run _helm_args_for_external false
   [[ "$output" != *"agentTLSMode"* ]]
 }
+
+# --- prime flavour / community cut-off ---------------------------------------
+# Whether a build reports itself as Prime is a property of the image, so these
+# stub the registry reads and assert only the decision logic.
+
+@test "image_prime_flavour reports prime when the marker is baked in" {
+  skopeo() { printf '{"config":{"Env":["RANCHER_VERSION_TYPE=prime"]}}'; }
+  export -f skopeo
+  [ "$(image_prime_flavour rancher/rancher v2.14.4)" = "prime" ]
+}
+
+@test "image_prime_flavour reports community when the marker is empty" {
+  skopeo() { printf '{"config":{"Env":["RANCHER_VERSION_TYPE="]}}'; }
+  export -f skopeo
+  [ "$(image_prime_flavour rancher/rancher v2.15.0)" = "community" ]
+}
+
+@test "image_prime_flavour distinguishes a missing tag from an unreadable one" {
+  skopeo() { return 1; }
+  export -f skopeo
+  image_exists() { return 1; }
+  [ "$(image_prime_flavour rancher/rancher v9.9.9)" = "missing" ]
+  image_exists() { return 2; }
+  [ "$(image_prime_flavour rancher/rancher v9.9.9)" = "unknown" ]
+}
+
+@test "the community cut-off hint fires for a patch beyond the published line" {
+  image_newest_ga() { printf '2.14.3'; }
+  run helm_missing_tag_hint rancher/rancher v2.14.4
+  [[ "$output" == *"2.14 line only up to 2.14.3"* ]]
+  [[ "$output" == *"rancher-prime-ga"* ]]
+}
+
+@test "the cut-off hint stays silent at or below the published patch" {
+  image_newest_ga() { printf '2.14.3'; }
+  [ "$(helm_missing_tag_hint rancher/rancher v2.14.3)" = "" ]
+  [ "$(helm_missing_tag_hint rancher/rancher v2.14.2)" = "" ]
+}
+
+@test "the cut-off hint is measured per release line, not globally" {
+  # 2.14.4 is older than the newest tag overall, so a global comparison would
+  # wrongly stay silent; the 2.14 line is what matters.
+  image_newest_ga() {
+    case "${2:-}" in
+      2.14) printf '2.14.3' ;;
+      *) printf '2.15.0' ;;
+    esac
+  }
+  run helm_missing_tag_hint rancher/rancher v2.14.4
+  [[ "$output" == *"2.14.3"* ]]
+}
+
+@test "the cut-off hint only applies to Docker Hub and to real versions" {
+  image_newest_ga() { printf '2.14.3'; }
+  [ "$(helm_missing_tag_hint registry.rancher.com/rancher/rancher v2.14.4)" = "" ]
+  [ "$(helm_missing_tag_hint rancher/rancher v2.15-head)" = "" ]
+  [ "$(helm_missing_tag_hint rancher/rancher head)" = "" ]
+}
+
+# --- repository scoping ------------------------------------------------------
+# `helm search repo <name>` is a keyword search over every configured
+# repository. Both staging repos publish a chart called "rancher-prime", so a
+# search for the prime channel also returns their rows and an unscoped match
+# resolves to a chart the prime repo does not carry.
+
+@test "resolve_chart_version ignores rows from other repositories" {
+  local mixed
+  mixed="$(
+    printf '%s\n' \
+      'NAMECHART VERSIONAPP VERSIONDESCRIPTION' \
+      'rancher-alpha/rancher-prime	2.15.1-alpha1	v2.15.1-alpha1	Install SUSE Rancher Prime' \
+      'rancher-latest/rancher-prime	2.15.0-rc1	v2.15.0-rc1	Install SUSE Rancher Prime' \
+      'rancher-prime/rancher	2.14.4	2.14.4	Install Rancher Server' \
+      'rancher-prime/rancher	2.14.3	2.14.3	Install Rancher Server'
+  )"
+  # head must take prime's own newest, not the alpha row that sorts higher
+  [ "$(resolve_chart_version rancher-prime head "$mixed")" = "2.14.4" ]
+}
+
+@test "resolve_chart_version ignores a same-named chart in another repository" {
+  local mixed
+  mixed="$(
+    printf '%s\n' \
+      'NAMECHART VERSIONAPP VERSIONDESCRIPTION' \
+      'rancher-alpha/rancher-prime	2.13.2-alpha3	v2.13.2-alpha3	Install SUSE Rancher Prime' \
+      'rancher-prime/rancher	2.14.4	2.14.4	Install Rancher Server'
+  )"
+  # 2.13.2 exists only as another repo's chart, so prime cannot satisfy it
+  [ "$(resolve_chart_version rancher-prime 2.13.2 "$mixed")" = "" ]
+}
+
+@test "resolve_chart_version keeps the channels apart in a shared search" {
+  local mixed
+  mixed="$(
+    printf '%s\n' \
+      'NAMECHART VERSIONAPP VERSIONDESCRIPTION' \
+      'rancher-alpha/rancher	2.15.1-alpha1	v2.15.1-alpha1	Install Rancher Server' \
+      'rancher-latest/rancher	2.15.0-rc5	v2.15.0-rc5	Install Rancher Server' \
+      'rancher-prime/rancher	2.14.4	2.14.4	Install Rancher Server'
+  )"
+  [ "$(resolve_chart_version rancher-alpha 2.15 "$mixed")" = "2.15.1-alpha1" ]
+  [ "$(resolve_chart_version rancher-latest 2.15 "$mixed")" = "2.15.0-rc5" ]
+  [ "$(resolve_chart_version rancher-prime head "$mixed")" = "2.14.4" ]
+}
+
+# --- bare minor on a community channel ---------------------------------------
+# Docker Hub publishes vX.Y.Z and vX.Y-head but never a bare vX.Y, so passing a
+# bare minor through would ask for a tag that cannot exist.
+
+@test "tag_is_bare_minor recognises a plain minor, with or without the v" {
+  run tag_is_bare_minor 2.14
+  [ "$status" -eq 0 ]
+  run tag_is_bare_minor v2.14
+  [ "$status" -eq 0 ]
+}
+
+@test "tag_is_bare_minor rejects a patch, a suffix or a name" {
+  for t in 2.14.3 v2.14.3 v2.15-head 2.15.0-rc5 head latest; do
+    run tag_is_bare_minor "$t"
+    [ "$status" -ne 0 ] || {
+      echo "expected literal: $t"
+      false
+    }
+  done
+}
+
+@test "a community bare minor resolves to the chart version" {
+  [ "$(resolve_image_tag '' 2.14.3 2.14)" = "v2.14.3" ]
+  [ "$(resolve_image_tag '' 2.15.0 v2.15)" = "v2.15.0" ]
+}
+
+@test "a community exact pin or rolling tag is still passed through" {
+  [ "$(resolve_image_tag '' 2.14.3 2.14.3)" = "v2.14.3" ]
+  [ "$(resolve_image_tag '' 2.15.0 head)" = "head" ]
+  [ "$(resolve_image_tag '' 2.15.0 v2.15-head)" = "v2.15-head" ]
+}
+
+@test "a pinned-image channel is unaffected by the bare-minor rule" {
+  [ "$(resolve_image_tag stgregistry.suse.com/rancher/rancher 2.14.4-rc1 2.14)" = "v2.14.4-rc1" ]
+}

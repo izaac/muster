@@ -11,7 +11,7 @@ _muster() {
   local commands="up build-ui wait tunnel warmup down env show version help"
   local flags="--provider --instance --external --version --repo --password \
     --out --dashboard-src --dashboard-dist --dashboard-branch --node-bin \
-    --kubeconfig --rancher-host --config --help"
+    --kubeconfig --rancher-host --config --dry-run --prefer-staging --help"
 
   case "$prev" in
     --provider)

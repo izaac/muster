@@ -26,10 +26,10 @@ INSTANCE="e2e"
 # Community Docker Hub is the default (no creds, real moving master via head);
 # the optimus alpha/rc staging channels and prime are opt-in.
 #
-# Only prime images report RANCHER_VERSION_TYPE=prime, which is what gates
-# Prime-only UI extensions. rancher-prime-ga needs no credentials. On the
-# staging channels only the alpha builds carry the marker; -head and -rcs- do
-# not.
+# Whether a build reports itself as Prime, which gates Prime-only UI extensions,
+# is a property of the image and not of the channel. Run
+# `muster up --dry-run` to read it off the image a given set of flags resolves
+# to. rancher-prime-ga needs no credentials.
 RANCHER_REPO="rancher-com-alpha"
 
 # RANCHER_IMAGE_TAG: "head" (newest devel chart in the channel) or a version
@@ -45,7 +45,10 @@ RANCHER_PASSWORD="password1234"
 # CERT_MANAGER_VERSION: cert-manager chart version (upstream parity).
 CERT_MANAGER_VERSION="v1.16.2"
 
-# K3S_IMAGE: k3d node image (k3d provider only).
+# K3S_IMAGE: k3d node image (k3d provider only). Left unset, it is taken from
+# the dashboard team's branches-metadata.json for the release line implied by
+# RANCHER_IMAGE_TAG, so the UI is tested on the Kubernetes version its suite
+# was written against. Set MUSTER_IGNORE_BRANCH_METADATA=1 to opt out.
 K3S_IMAGE="rancher/k3s:v1.33.1-k3s1"
 
 # --- external access (optional) ----------------------------------------------

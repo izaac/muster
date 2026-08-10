@@ -36,12 +36,12 @@ declare -gA MUSTER_REPO_URL=(
 # with the literal tag" (community/com-* lines); a non-empty registry pins a
 # staging/prime image and the resolved tag becomes v<chart_version>.
 #
-# Prime images report themselves as Prime (RANCHER_VERSION_TYPE=prime), which is
-# what gates Prime-only UI extensions. Two sources serve them:
+# Whether a build reports itself as Prime, which is what gates Prime-only UI
+# extensions, is a property of the image and not of the channel: some tags on a
+# prime registry are community builds. Use `muster up --dry-run` to read it off
+# the image that a given set of flags actually resolves to.
 #   rancher-prime-ga  registry.rancher.com, GA releases, anonymously pullable
 #   rancher-prime     registry.suse.com, gated, needs credentials out of band
-# On the staging channels only the alpha builds carry the Prime marker; the
-# -head and -rcs- builds there report as community.
 declare -gA MUSTER_REPO_IMAGE=(
   ["rancher-prime"]="registry.suse.com/rancher/rancher"
   ["rancher-prime-ga"]="registry.rancher.com/rancher/rancher"
@@ -68,7 +68,7 @@ declare -gA MUSTER_CERT_MANAGER_CRDS_SHA256=(
 repo_valid() { [ -n "${MUSTER_REPO_URL[${1:-}]+x}" ]; }
 
 # repo_keys - print the valid channel keys, space-separated.
-repo_keys() { printf '%s ' "${!MUSTER_REPO_URL[@]}"; }
+repo_keys() { printf '%s\n' "${!MUSTER_REPO_URL[@]}" | sort | tr '\n' ' '; }
 
 # repo_url <key> / repo_image <key> - map lookups (assume a valid key).
 repo_url() { printf '%s' "${MUSTER_REPO_URL[$1]}"; }
@@ -94,8 +94,15 @@ resolve_chart_version() {
   local repo="$1" tag="$2" search="$3" vs filter
   vs="$(version_string "$tag")"
 
+  # `helm search repo <name>` is a keyword search over every configured
+  # repository, not a listing of one. Both staging repos publish a chart called
+  # "rancher-prime", so a search for the prime channel also returns their rows,
+  # and an unscoped match resolves to a chart the prime repo does not carry.
+  # Keep only this repository's "rancher" chart, which also drops the header.
+  search="$(printf '%s\n' "$search" | grep "^${repo}/rancher[[:space:]]" || true)"
+
   if [ "$tag" = "head" ]; then
-    printf '%s\n' "$search" | sed -n '1!p' \
+    printf '%s\n' "$search" \
       | awk '{print $2}' | sort -V | tail -1 | tr -d '[:space:]'
     return 0
   fi
@@ -107,7 +114,7 @@ resolve_chart_version() {
   esac
 
   if [ -n "$filter" ]; then
-    printf '%s\n' "$search" | grep "^${repo}/rancher[[:space:]]" \
+    printf '%s\n' "$search" \
       | grep "$vs" | grep -- "$filter" \
       | awk '{print $2}' | sort -V | tail -1 | tr -d '[:space:]'
   else
@@ -133,12 +140,35 @@ image_tag_normalize() {
   esac
 }
 
-# resolve_image_tag <image> <chart_version> <tag> - the tag handed to helm:
-# the chart version when the channel pins an image, else the requested tag.
-# Both are normalized, so "2.15.0" and "v2.15.0" resolve identically.
+# tag_is_bare_minor <tag> - true for a plain "X.Y" or "vX.Y" with no patch and
+# no suffix, which is how a caller asks for "the newest of that line".
+tag_is_bare_minor() {
+  case "${1:?tag required}" in
+    v[0-9]*.[0-9]* | [0-9]*.[0-9]*)
+      case "${1#v}" in
+        *.*.* | *-*) return 1 ;;
+        *) return 0 ;;
+      esac
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# resolve_image_tag <image> <chart_version> <tag> - the tag handed to helm.
+#
+# A channel that pins an image uses the chart version. A community channel
+# normally passes the requested tag through, because there the tag is what
+# selects the build. The exception is a bare minor: Docker Hub publishes
+# vX.Y.Z and vX.Y-head but never a bare vX.Y, so passing "2.14" through asks for
+# a tag that cannot exist. Resolve it to the chart version, which is the newest
+# of that line and what the caller meant.
+#
+# Both paths are normalized, so "2.15.0" and "v2.15.0" resolve identically.
 resolve_image_tag() {
   local image="$1" version="$2" tag="$3"
   if [ -n "$image" ]; then
+    image_tag_normalize "$version"
+  elif [ -n "$version" ] && tag_is_bare_minor "$tag"; then
     image_tag_normalize "$version"
   else
     image_tag_normalize "$tag"
@@ -251,6 +281,84 @@ image_exists() {
   esac
 }
 
+# image_prime_flavour <image> <tag> - "prime", "community", "missing" or
+# "unknown".
+#
+# Rancher reports itself as Prime when RANCHER_VERSION_TYPE=prime is baked into
+# the image (rancher/rancher pkg/version/version.go), and the dashboard reads
+# that back to gate Prime-only UI extensions.
+#
+# This is a property of the individual image and cannot be inferred from the
+# registry or the tag shape. Observed counter-examples to every tempting rule:
+# registry.rancher.com serves prime for v2.14.4 but community for
+# v2.14.2-hotfix-64aa.1; on stgregistry the -rc and -alpha builds are prime
+# while -head and -rcs- are not. So read the image rather than guess.
+#
+# Requires skopeo to read the config blob. Without it, or when the read fails,
+# the answer is unknown; a tag the registry does not have is reported as missing
+# so a typo is not mistaken for an unreadable image.
+image_prime_flavour() {
+  local image="${1:?image required}" tag="${2:?tag required}" cfg
+  if command -v skopeo >/dev/null 2>&1; then
+    if cfg="$(skopeo inspect --config "docker://${image}:${tag}" 2>/dev/null)"; then
+      case "$cfg" in
+        *'"RANCHER_VERSION_TYPE=prime"'*) printf 'prime' ;;
+        *) printf 'community' ;;
+      esac
+      return 0
+    fi
+  fi
+  local rc=0
+  image_exists "$image" "$tag" || rc=$?
+  [ "$rc" -eq 1 ] && {
+    printf 'missing'
+    return 0
+  }
+  printf 'unknown'
+}
+
+# image_newest_ga <image> [minor] - highest vX.Y.Z tag a registry publishes,
+# optionally within one X.Y line. Pre-releases are ignored, so what comes back
+# is that line's real GA ceiling.
+image_newest_ga() {
+  local image="${1:?image required}" minor="${2:-}"
+  command -v skopeo >/dev/null 2>&1 || return 0
+  skopeo list-tags "docker://${image}" 2>/dev/null \
+    | sed -n 's/.*"\(.*\)".*/\1/p' \
+    | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' \
+    | sed 's/^v//' \
+    | grep -E "^${minor:+${minor}\.}" \
+    | sort -V | tail -1
+}
+
+# helm_missing_tag_hint <image> <tag> - an extra line of explanation when a tag
+# is absent, or nothing when there is nothing useful to add.
+#
+# A release line is published to Docker Hub only up to some patch, after which
+# further patches ship to the prime registries alone. Where that stops differs
+# per line and moves over time, so compare what the registry actually serves
+# rather than encoding a rule that will rot.
+helm_missing_tag_hint() {
+  local image="${1:?image required}" tag="${2:?tag required}" newest asked
+  case "$image" in
+    rancher/rancher | docker.io/*) ;;
+    *) return 0 ;;
+  esac
+  asked="$(printf '%s' "$tag" | sed 's/^v//')"
+  case "$asked" in
+    [0-9]*.[0-9]*.[0-9]*) ;;
+    *) return 0 ;;
+  esac
+  # Compare within the line: the cut-off is per release line, so a 2.14 patch
+  # must be measured against the newest 2.14 on Docker Hub, not against 2.15.
+  local minor="${asked%.*}"
+  newest="$(image_newest_ga "$image" "$minor")"
+  [ -n "$newest" ] || return 0
+  [ "$asked" = "$newest" ] && return 0
+  [ "$(printf '%s\n%s\n' "$asked" "$newest" | sort -V | tail -1)" = "$asked" ] || return 0
+  printf 'Docker Hub carries the %s line only up to %s; later patches go to the prime registries only. Try --repo rancher-prime-ga, or rancher-latest for a pre-release.' "$minor" "$newest"
+}
+
 # helm_verify_image - confirm the resolved image:tag is pullable before helm is
 # asked to install it. Set MUSTER_SKIP_IMAGE_CHECK=1 to bypass.
 helm_verify_image() {
@@ -272,7 +380,7 @@ helm_verify_image() {
       ;;
   esac
 
-  local hint line
+  local hint line why
   hint="$(image_tag_suggestions "$image" "$tag" || true)"
   if [ -n "$hint" ]; then
     log_err "closest published tags:"
@@ -280,6 +388,8 @@ helm_verify_image() {
       printf '  %s\n' "$line" >&2
     done <<<"$hint"
   fi
+  why="$(helm_missing_tag_hint "$image" "$tag" || true)"
+  [ -n "$why" ] && log_err "$why"
   die "image ${image}:${tag} does not exist in the registry (repo=${RANCHER_REPO:-?}, requested version=${RANCHER_IMAGE_TAG:-?}).
   A channel without a pinned image passes --version through to the tag verbatim, so it must name a real tag.
   Set MUSTER_SKIP_IMAGE_CHECK=1 to install anyway."
@@ -432,10 +542,16 @@ helm_resolve_version() {
   retry 3 5 "helm repo update" -- helm repo update "$repo"
 
   local search
-  search="$(helm search repo "$repo" --devel --versions 2>/dev/null || true)"
+  search="$(helm search repo "${repo}/rancher" --devel --versions 2>/dev/null || true)"
   RANCHER_CHART_VERSION="$(resolve_chart_version "$repo" "$tag" "$search" || true)"
-  [ -n "$RANCHER_CHART_VERSION" ] \
-    || die "could not resolve a chart version for repo=$repo tag=$tag"
+  if [ -z "$RANCHER_CHART_VERSION" ]; then
+    local available why
+    available="$(printf '%s\n' "$search" | sed -n '1!p' | awk '{print $2}' | sort -V | tail -5 | tr '\n' ' ')"
+    why="$(helm_missing_tag_hint "${RANCHER_IMAGE:-rancher/rancher}" "$tag" || true)"
+    [ -n "$available" ] && log_err "newest in ${repo}: ${available}"
+    [ -n "$why" ] && log_err "$why"
+    die "no chart version in ${repo} matches '${tag}'"
+  fi
 
   RANCHER_IMAGE_TAG_RESOLVED="$(resolve_image_tag "$RANCHER_IMAGE" "$RANCHER_CHART_VERSION" "$tag")"
   export RANCHER_CHART_URL RANCHER_IMAGE RANCHER_CHART_VERSION RANCHER_IMAGE_TAG_RESOLVED

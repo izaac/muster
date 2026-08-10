@@ -24,6 +24,7 @@ _MUSTER_HELM_SH=1
 # Channel key -> chart repo URL. Single source of truth for the matrix.
 declare -gA MUSTER_REPO_URL=(
   ["rancher-prime"]="https://charts.rancher.com/server-charts/prime"
+  ["rancher-prime-ga"]="https://charts.rancher.com/server-charts/prime"
   ["rancher-latest"]="https://charts.optimus.rancher.io/server-charts/latest"
   ["rancher-alpha"]="https://charts.optimus.rancher.io/server-charts/alpha"
   ["rancher-community"]="https://releases.rancher.com/server-charts/stable"
@@ -33,10 +34,17 @@ declare -gA MUSTER_REPO_URL=(
 
 # Channel key -> container image. Empty means "use Docker Hub rancher/rancher
 # with the literal tag" (community/com-* lines); a non-empty registry pins a
-# staging/prime image and the resolved tag becomes v<chart_version>. The prime
-# registry is gated and needs credentials configured separately.
+# staging/prime image and the resolved tag becomes v<chart_version>.
+#
+# Prime images report themselves as Prime (RANCHER_VERSION_TYPE=prime), which is
+# what gates Prime-only UI extensions. Two sources serve them:
+#   rancher-prime-ga  registry.rancher.com, GA releases, anonymously pullable
+#   rancher-prime     registry.suse.com, gated, needs credentials out of band
+# On the staging channels only the alpha builds carry the Prime marker; the
+# -head and -rcs- builds there report as community.
 declare -gA MUSTER_REPO_IMAGE=(
   ["rancher-prime"]="registry.suse.com/rancher/rancher"
+  ["rancher-prime-ga"]="registry.rancher.com/rancher/rancher"
   ["rancher-latest"]="stgregistry.suse.com/rancher/rancher"
   ["rancher-alpha"]="stgregistry.suse.com/rancher/rancher"
   ["rancher-community"]=""
@@ -113,15 +121,168 @@ resolve_chart_version() {
   fi
 }
 
+# image_tag_normalize <tag> - the tag as the registry actually publishes it.
+# Rancher tags every version with a leading "v", so a caller who writes the
+# version the way helm does ("2.15.0") would otherwise ask for a tag that has
+# never existed. Anything not starting with a digit is a name rather than a
+# version ("head") and is left alone.
+image_tag_normalize() {
+  case "${1:?tag required}" in
+    [0-9]*) printf 'v%s' "$1" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
 # resolve_image_tag <image> <chart_version> <tag> - the tag handed to helm:
-# v<chart_version> when the channel pins an image, else the literal tag.
+# the chart version when the channel pins an image, else the requested tag.
+# Both are normalized, so "2.15.0" and "v2.15.0" resolve identically.
 resolve_image_tag() {
   local image="$1" version="$2" tag="$3"
   if [ -n "$image" ]; then
-    printf 'v%s' "$version"
+    image_tag_normalize "$version"
   else
-    printf '%s' "$tag"
+    image_tag_normalize "$tag"
   fi
+}
+
+# --- image preflight ---------------------------------------------------------
+# A wrong image tag is otherwise invisible until the pod has been retrying for
+# minutes and `kubectl rollout status` finally times out. The registry can
+# answer "does this tag exist" in about a second, so ask before installing.
+#
+# The parsing helpers are pure; only image_exists talks to a registry.
+
+# image_registry_host <image> - registry a reference resolves to. A first path
+# segment counts as a registry only when it looks like a host, so
+# "rancher/rancher" is Docker Hub while "stgregistry.suse.com/rancher/rancher"
+# is not.
+image_registry_host() {
+  local image="${1:?image required}" first="${1%%/*}"
+  case "$image" in
+    */*) ;;
+    *)
+      printf 'docker.io'
+      return 0
+      ;;
+  esac
+  case "$first" in
+    localhost | *.* | *:*) printf '%s' "$first" ;;
+    *) printf 'docker.io' ;;
+  esac
+}
+
+# image_repo_path <image> - repository path as the registry v2 API expects it.
+# Docker Hub implies "library/" for single-segment names.
+image_repo_path() {
+  local image="${1:?image required}" host
+  host="$(image_registry_host "$image")"
+  local path="$image"
+  case "$image" in
+    "$host"/*) path="${image#"$host"/}" ;;
+  esac
+  if [ "$host" = docker.io ] && [ "${path%%/*}" = "$path" ]; then
+    path="library/$path"
+  fi
+  printf '%s' "$path"
+}
+
+# image_tag_suggestions <image> <tag> - published tags containing the requested
+# one, so a near miss like "v2.15" can point at the real "v2.15-head" and
+# "v2.15.0". Architecture variants are dropped, and rolling head and GA tags are
+# ranked above pre-releases: for a bare minor those two are what the caller
+# almost always meant, and a plain version sort would bury them under every rc
+# and alpha. Per-commit build tags are dropped as noise. Requires skopeo; prints
+# nothing without it.
+image_tag_suggestions() {
+  local image="${1:?image required}" tag="${2:?tag required}"
+  command -v skopeo >/dev/null 2>&1 || return 0
+  skopeo list-tags "docker://${image}" 2>/dev/null \
+    | sed -n 's/.*"\(.*\)".*/\1/p' \
+    | grep -F "$tag" \
+    | grep -vE -- '-(amd64|arm64|arm|s390x|ppc64le|windows.*)$' \
+    | grep -vE -- '-[0-9a-f]{7,}(-|$)' \
+    | grep -vx "$tag" \
+    | awk '{ prio = ($0 ~ /-head$/ || $0 !~ /-/) ? 1 : 0; print prio "|" $0 }' \
+    | sort -V -t'|' -k1,1 -k2,2 | tail -5 | cut -d'|' -f2 || true
+}
+
+# image_exists <image> <tag> - 0 the tag exists, 1 the registry says it does
+# not, 2 no usable answer (gated registry, no credentials, network trouble).
+# Only a definitive 1 is worth failing a run over.
+image_exists() {
+  local image="${1:?image required}" tag="${2:?tag required}" out rc
+  if command -v skopeo >/dev/null 2>&1; then
+    out="$(skopeo inspect --raw "docker://${image}:${tag}" 2>&1)" && return 0
+    case "$out" in
+      *"manifest unknown"* | *"was not found"* | *"not found"* | *"404"*) return 1 ;;
+      *) return 2 ;;
+    esac
+  fi
+
+  command -v curl >/dev/null 2>&1 || return 2
+  local host repo url code token bundle curl_args=(-sS -o /dev/null -w '%{http_code}')
+  host="$(image_registry_host "$image")"
+  repo="$(image_repo_path "$image")"
+  bundle="$(ca_bundle)"
+  [ -n "$bundle" ] && curl_args+=(--cacert "$bundle")
+
+  if [ "$host" = docker.io ]; then
+    url="https://registry-1.docker.io/v2/${repo}/manifests/${tag}"
+    token="$(curl -sS ${bundle:+--cacert "$bundle"} \
+      "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${repo}:pull" 2>/dev/null \
+      | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+    [ -n "$token" ] || return 2
+    curl_args+=(-H "Authorization: Bearer $token")
+  else
+    url="https://${host}/v2/${repo}/manifests/${tag}"
+  fi
+
+  rc=0
+  code="$(curl "${curl_args[@]}" \
+    -H 'Accept: application/vnd.oci.image.index.v1+json' \
+    -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+    -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+    "$url" 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] || return 2
+  case "$code" in
+    2*) return 0 ;;
+    404) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
+# helm_verify_image - confirm the resolved image:tag is pullable before helm is
+# asked to install it. Set MUSTER_SKIP_IMAGE_CHECK=1 to bypass.
+helm_verify_image() {
+  is_true "${MUSTER_SKIP_IMAGE_CHECK:-}" && return 0
+  local image="${RANCHER_IMAGE:-rancher/rancher}"
+  local tag="${RANCHER_IMAGE_TAG_RESOLVED:?RANCHER_IMAGE_TAG_RESOLVED is required}"
+
+  # Assign through || so a non-zero return is a value, not a `set -e` abort.
+  local rc=0
+  image_exists "$image" "$tag" || rc=$?
+  case "$rc" in
+    0)
+      log_ok "image ${image}:${tag} is pullable"
+      return 0
+      ;;
+    2)
+      log_warn "could not verify ${image}:${tag} (gated registry or network); continuing"
+      return 0
+      ;;
+  esac
+
+  local hint line
+  hint="$(image_tag_suggestions "$image" "$tag" || true)"
+  if [ -n "$hint" ]; then
+    log_err "closest published tags:"
+    while IFS= read -r line; do
+      printf '  %s\n' "$line" >&2
+    done <<<"$hint"
+  fi
+  die "image ${image}:${tag} does not exist in the registry (repo=${RANCHER_REPO:-?}, requested version=${RANCHER_IMAGE_TAG:-?}).
+  A channel without a pinned image passes --version through to the tag verbatim, so it must name a real tag.
+  Set MUSTER_SKIP_IMAGE_CHECK=1 to install anyway."
 }
 
 # --- keep-fresh (freshness-aware promotion) ----------------------------------
@@ -279,6 +440,7 @@ helm_resolve_version() {
   RANCHER_IMAGE_TAG_RESOLVED="$(resolve_image_tag "$RANCHER_IMAGE" "$RANCHER_CHART_VERSION" "$tag")"
   export RANCHER_CHART_URL RANCHER_IMAGE RANCHER_CHART_VERSION RANCHER_IMAGE_TAG_RESOLVED
   log_info "resolved: repo=$repo chart=$RANCHER_CHART_VERSION image=${RANCHER_IMAGE:-rancher/rancher} tag=$RANCHER_IMAGE_TAG_RESOLVED"
+  helm_verify_image
 }
 
 # helm_install_rancher <kubeconfig> <hostname> - install cert-manager and
@@ -334,6 +496,14 @@ helm_install_rancher() {
     --set "extraEnv[0].name=CATTLE_AGENT_IMAGE"
     --set-string "extraEnv[0].value=${agent_image}:${tag}"
   )
+  # External mode publishes Rancher behind a tunnel whose certificate Rancher
+  # did not issue, so agents must validate against the system trust store. The
+  # chart value is set here rather than patched afterwards: patching leaves a
+  # window where Rancher is already serving in strict mode, and anything that
+  # registers in that window is set up against the wrong expectation.
+  if is_true "${EXTERNAL:-}"; then
+    args+=(--set "agentTLSMode=system-store")
+  fi
   if [ -n "${DASHBOARD_DIST:-}" ]; then
     args+=(
       --set "extraEnv[1].name=CATTLE_UI_OFFLINE_PREFERRED"

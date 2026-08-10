@@ -97,8 +97,8 @@ setup() {
 
 # --- repo map ----------------------------------------------------------------
 
-@test "repo_valid accepts the six known channels" {
-  for k in rancher-prime rancher-latest rancher-alpha \
+@test "repo_valid accepts the seven known channels" {
+  for k in rancher-prime rancher-prime-ga rancher-latest rancher-alpha \
     rancher-community rancher-com-rc rancher-com-alpha; do
     run repo_valid "$k"
     [ "$status" -eq 0 ] || {
@@ -120,6 +120,11 @@ setup() {
 @test "repo_url and repo_image map prime to the gated registry" {
   [ "$(repo_url rancher-prime)" = "https://charts.rancher.com/server-charts/prime" ]
   [ "$(repo_image rancher-prime)" = "registry.suse.com/rancher/rancher" ]
+}
+
+@test "repo_url and repo_image map GA prime to the ungated registry" {
+  [ "$(repo_url rancher-prime-ga)" = "https://charts.rancher.com/server-charts/prime" ]
+  [ "$(repo_image rancher-prime-ga)" = "registry.rancher.com/rancher/rancher" ]
 }
 
 @test "staging channels use the optimus charts and stgregistry image" {
@@ -348,4 +353,128 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"PROMOTE community -> rancher-alpha"* ]]
   [[ "$output" == *"2.14.3-alpha6"* ]]
+}
+
+# --- image_tag_normalize -----------------------------------------------------
+
+@test "image_tag_normalize adds the leading v to a bare version" {
+  [ "$(image_tag_normalize 2.15.0)" = "v2.15.0" ]
+  [ "$(image_tag_normalize 2.15)" = "v2.15" ]
+  [ "$(image_tag_normalize 2.15.0-rc5)" = "v2.15.0-rc5" ]
+  [ "$(image_tag_normalize 2.15-head)" = "v2.15-head" ]
+}
+
+@test "image_tag_normalize leaves an already-prefixed version alone" {
+  [ "$(image_tag_normalize v2.15.0)" = "v2.15.0" ]
+  [ "$(image_tag_normalize v2.15-head)" = "v2.15-head" ]
+}
+
+@test "image_tag_normalize leaves a name that is not a version alone" {
+  [ "$(image_tag_normalize head)" = "head" ]
+  [ "$(image_tag_normalize latest)" = "latest" ]
+}
+
+@test "resolve_image_tag normalizes both branches" {
+  # community channel: the requested tag, with the v it was missing
+  [ "$(resolve_image_tag '' 2.15.0 2.15.0)" = "v2.15.0" ]
+  # pinned-image channel: the chart version
+  [ "$(resolve_image_tag stgregistry.suse.com/rancher/rancher 2.15.1-alpha1 2.15.1-alpha1)" = "v2.15.1-alpha1" ]
+}
+
+@test "resolve_image_tag is idempotent for an already-correct tag" {
+  [ "$(resolve_image_tag '' 2.15.0 v2.15.0)" = "v2.15.0" ]
+  [ "$(resolve_image_tag '' 2.15.0 head)" = "head" ]
+}
+
+# --- image preflight ---------------------------------------------------------
+
+@test "image_registry_host treats a bare name as Docker Hub" {
+  [ "$(image_registry_host rancher)" = "docker.io" ]
+  [ "$(image_registry_host rancher/rancher)" = "docker.io" ]
+}
+
+@test "image_registry_host recognises a real registry host" {
+  [ "$(image_registry_host stgregistry.suse.com/rancher/rancher)" = "stgregistry.suse.com" ]
+  [ "$(image_registry_host registry.suse.com/rancher/rancher)" = "registry.suse.com" ]
+  [ "$(image_registry_host localhost/rancher)" = "localhost" ]
+  [ "$(image_registry_host my.reg:5000/rancher/rancher)" = "my.reg:5000" ]
+}
+
+@test "image_repo_path strips the registry host" {
+  [ "$(image_repo_path stgregistry.suse.com/rancher/rancher)" = "rancher/rancher" ]
+  [ "$(image_repo_path my.reg:5000/a/b/c)" = "a/b/c" ]
+}
+
+@test "image_repo_path implies library for a single-segment Docker Hub name" {
+  [ "$(image_repo_path nginx)" = "library/nginx" ]
+  [ "$(image_repo_path rancher/rancher)" = "rancher/rancher" ]
+}
+
+@test "helm_verify_image passes when the tag exists" {
+  image_exists() { return 0; }
+  RANCHER_IMAGE="" RANCHER_IMAGE_TAG_RESOLVED="v2.15-head"
+  run helm_verify_image
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"rancher/rancher:v2.15-head is pullable"* ]]
+}
+
+@test "helm_verify_image fails fast when the registry says the tag is missing" {
+  image_exists() { return 1; }
+  image_tag_suggestions() { printf '%s\n' "v2.15-head" "v2.15.0"; }
+  RANCHER_IMAGE="" RANCHER_IMAGE_TAG_RESOLVED="v2.15"
+  RANCHER_REPO="rancher-com-rc" RANCHER_IMAGE_TAG="v2.15"
+  run helm_verify_image
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"rancher/rancher:v2.15 does not exist"* ]]
+  [[ "$output" == *"v2.15-head"* ]]
+  [[ "$output" == *"v2.15.0"* ]]
+}
+
+@test "helm_verify_image only warns when the answer is inconclusive" {
+  image_exists() { return 2; }
+  RANCHER_IMAGE="registry.suse.com/rancher/rancher" RANCHER_IMAGE_TAG_RESOLVED="v2.15.0"
+  run helm_verify_image
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"could not verify"* ]]
+}
+
+@test "helm_verify_image can be bypassed" {
+  image_exists() { return 1; }
+  MUSTER_SKIP_IMAGE_CHECK=1 RANCHER_IMAGE="" RANCHER_IMAGE_TAG_RESOLVED="nope"
+  run helm_verify_image
+  [ "$status" -eq 0 ]
+}
+
+# --- agentTLSMode ------------------------------------------------------------
+# Rancher must never serve in strict mode behind a tunnel whose certificate it
+# did not issue, so the chart value is set at install rather than patched after.
+
+_helm_args_for_external() {
+  require_cmd() { :; }
+  download_verify() { :; }
+  kubectl() { :; }
+  retry() { :; }
+  helm() {
+    [ "${1:-}" = "--kubeconfig" ] && {
+      shift 2
+      printf '%s\n' "$*"
+    }
+    return 0
+  }
+  RANCHER_CHART_VERSION=2.15.1-alpha1 \
+    RANCHER_IMAGE_TAG_RESOLVED=v2.15.1-alpha1 \
+    RANCHER_IMAGE=stgregistry.suse.com/rancher/rancher \
+    RANCHER_REPO=rancher-alpha \
+    EXTERNAL="$1" \
+    helm_install_rancher /tmp/kc rancher.example.com 2>/dev/null
+}
+
+@test "external mode sets agentTLSMode=system-store at install" {
+  run _helm_args_for_external true
+  [[ "$output" == *"agentTLSMode=system-store"* ]]
+}
+
+@test "internal mode leaves agentTLSMode at the chart default" {
+  run _helm_args_for_external false
+  [[ "$output" != *"agentTLSMode"* ]]
 }

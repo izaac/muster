@@ -45,14 +45,22 @@ muster up --provider k3d --repo rancher-latest --version 2.13
 # A specific prime release (gated registry; needs pull creds out of band)
 muster up --provider k3d --repo rancher-prime --version 2.13.4
 
+# GA prime from registry.rancher.com, no credentials needed
+muster up --provider k3d --repo rancher-prime-ga --version 2.14.4
+
 # Rolling head from the community alpha channel (default)
 muster up --provider k3d --repo rancher-com-alpha --version head
 ```
 
-Channels: `rancher-prime`, `rancher-latest`, `rancher-alpha`,
-`rancher-community`, `rancher-com-rc`, `rancher-com-alpha` (default). The
-alpha/rc staging channels publish freely pullable images and are the happy
-path for testing; prime is gated.
+Channels: `rancher-prime`, `rancher-prime-ga`, `rancher-latest`,
+`rancher-alpha`, `rancher-community`, `rancher-com-rc`, `rancher-com-alpha`
+(default). The alpha/rc staging channels publish freely pullable images and are
+the happy path for testing; `rancher-prime` is gated, `rancher-prime-ga` is not.
+
+Only prime images report themselves as Prime, which is what gates Prime-only UI
+extensions. Use `rancher-prime-ga` for a GA prime build without credentials, or
+`rancher-alpha` for a prime prerelease — on the staging channels only the alpha
+builds carry the marker, the `-head` and `-rcs-` builds report as community.
 
 To list the chart/image combinations available for a minor across every
 channel, use

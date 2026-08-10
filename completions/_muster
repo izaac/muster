@@ -24,7 +24,7 @@ _muster() {
     '--instance[Instance id]:instance:' \
     '--external[Expose Rancher via a public tunnel]' \
     '--version[Rancher image tag]:tag:' \
-    '--repo[Rancher channel]:channel:(rancher-prime rancher-latest rancher-alpha rancher-community rancher-com-rc rancher-com-alpha)' \
+    '--repo[Rancher channel]:channel:(rancher-prime rancher-prime-ga rancher-latest rancher-alpha rancher-community rancher-com-rc rancher-com-alpha)' \
     '--password[Rancher bootstrap/admin password]:password:' \
     '--out[Handoff format]:format:(env cypress json)' \
     '--dashboard-src[rancher/dashboard checkout]:dir:_files -/' \

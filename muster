@@ -46,8 +46,9 @@ Flags:
   --instance <name>                 Instance id (default: e2e).
   --external                        Expose Rancher via a public tunnel.
   --repo <channel>                  Rancher channel (default: rancher-com-alpha):
-                                    rancher-prime|rancher-latest|rancher-alpha|
-                                    rancher-community|rancher-com-rc|rancher-com-alpha.
+                                    rancher-prime|rancher-prime-ga|rancher-latest|
+                                    rancher-alpha|rancher-community|rancher-com-rc|
+                                    rancher-com-alpha.
   --version <tag>                   Image tag: head or a version like 2.13 /
                                     2.13.4-rc1 (default: head).
   --prefer-staging                  Keep-fresh: when the tag is a rolling head

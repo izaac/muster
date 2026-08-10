@@ -19,7 +19,7 @@ _muster() {
       return
       ;;
     --repo)
-      mapfile -t COMPREPLY < <(compgen -W "rancher-prime rancher-latest rancher-alpha rancher-community rancher-com-rc rancher-com-alpha" -- "$cur")
+      mapfile -t COMPREPLY < <(compgen -W "rancher-prime rancher-prime-ga rancher-latest rancher-alpha rancher-community rancher-com-rc rancher-com-alpha" -- "$cur")
       return
       ;;
     --out)

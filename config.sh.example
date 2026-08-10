@@ -20,10 +20,16 @@ INSTANCE="e2e"
 #   rancher-com-rc    Docker Hub RC (head -> master image)
 #   rancher-latest    optimus RC staging (stgregistry image)
 #   rancher-alpha     optimus alpha staging (stgregistry image)
+#   rancher-prime-ga  registry.rancher.com GA prime; anonymously pullable
 #   rancher-prime     SUSE prime registry; GATED, needs pull creds set up
 #   rancher-community Docker Hub stable
 # Community Docker Hub is the default (no creds, real moving master via head);
 # the optimus alpha/rc staging channels and prime are opt-in.
+#
+# Only prime images report RANCHER_VERSION_TYPE=prime, which is what gates
+# Prime-only UI extensions. rancher-prime-ga needs no credentials. On the
+# staging channels only the alpha builds carry the marker; -head and -rcs- do
+# not.
 RANCHER_REPO="rancher-com-alpha"
 
 # RANCHER_IMAGE_TAG: "head" (newest devel chart in the channel) or a version

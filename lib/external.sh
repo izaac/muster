@@ -15,6 +15,9 @@ external_apply() {
     kubectl --kubeconfig "$kc" patch settings.management.cattle.io server-url --type=merge \
     -p "{\"value\":\"https://${host}\"}"
 
+  # helm_install_rancher already passes agentTLSMode=system-store, so Rancher
+  # never serves in strict mode. This re-asserts it for a cluster installed by
+  # something else (the existing provider) and is a no-op otherwise.
   log_info "external mode: setting agent-tls-mode=system-store"
   retry 20 5 "agent-tls-mode set" -- \
     kubectl --kubeconfig "$kc" patch settings.management.cattle.io agent-tls-mode --type=merge \

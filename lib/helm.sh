@@ -622,6 +622,20 @@ helm_install_rancher() {
   if is_true "${EXTERNAL:-}"; then
     args+=(--set "agentTLSMode=system-store")
   fi
+  # Airgap: Rancher rewrites its system images to the private registry, and
+  # publishes that choice as the system-default-registry setting. Components
+  # that build an image reference themselves read that setting, so it has to be
+  # set for them to have anything to prefix with.
+  if is_true "${AIRGAP:-}"; then
+    local node_registry
+    node_registry="$(airgap_registry_host "$MIRROR_REGISTRY")"
+    args+=(--set "systemDefaultRegistry=${node_registry}")
+    # Rancher otherwise clones its three chart repositories from git.rancher.io
+    # on startup, which an airgapped install cannot reach. The same charts are
+    # already baked into the image, so use those instead.
+    args+=(--set "useBundledSystemChart=true")
+    log_info "airgap: systemDefaultRegistry=${node_registry}, bundled system charts"
+  fi
   if [ -n "${DASHBOARD_DIST:-}" ]; then
     args+=(
       --set "extraEnv[1].name=CATTLE_UI_OFFLINE_PREFERRED"

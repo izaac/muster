@@ -69,8 +69,17 @@ Flags:
   --k3k-version <tag>               K3K version to mirror (implies
                                     --mirror-extension). Defaults to the newest
                                     K3K release.
+  --k3s-versions <n>                How many of the newest k3s versions to
+                                    mirror, so a virtual cluster can be created
+                                    at any of them (default 3).
   --insecure-registry               Skip TLS verification against the target
                                     registry (a plain local registry).
+  --airgap                          Resolve every image through --registry, so
+                                    a pull the mirror does not cover fails
+                                    rather than reaching the internet.
+  --from-cluster                    For `mirror`: copy what the running cluster
+                                    is asking for, filling what no published
+                                    image list names.
   --prefer-staging                  Keep-fresh: when the tag is a rolling head
                                     tag (head / vX.Y-head) and the newest SUSE
                                     staging build (rancher-latest/-alpha) is
@@ -116,7 +125,10 @@ MIRROR_REGISTRY="${MIRROR_REGISTRY:-}"
 MIRROR_ALL="${MIRROR_ALL:-false}"
 MIRROR_EXTENSION="${MIRROR_EXTENSION:-false}"
 MIRROR_K3K_TAG="${MIRROR_K3K_TAG:-}"
+MIRROR_K3S_VERSIONS="${MIRROR_K3S_VERSIONS:-3}"
 MIRROR_INSECURE="${MIRROR_INSECURE:-false}"
+AIRGAP="${AIRGAP:-false}"
+MIRROR_FROM_CLUSTER="${MIRROR_FROM_CLUSTER:-false}"
 RANCHER_PASSWORD="${RANCHER_PASSWORD:-password1234}"
 OUT="${OUT:-env}"
 DASHBOARD_SRC="${DASHBOARD_SRC:-}"
@@ -188,6 +200,11 @@ while [ $# -gt 0 ]; do
       MIRROR_EXTENSION="true"
       shift
       ;;
+    --k3s-versions)
+      MIRROR_K3S_VERSIONS="${2:?--k3s-versions needs a value}"
+      MIRROR_EXTENSION="true"
+      shift 2
+      ;;
     --k3k-version)
       MIRROR_K3K_TAG="${2:?--k3k-version needs a value}"
       MIRROR_EXTENSION="true"
@@ -195,6 +212,14 @@ while [ $# -gt 0 ]; do
       ;;
     --insecure-registry)
       MIRROR_INSECURE="true"
+      shift
+      ;;
+    --airgap)
+      AIRGAP="true"
+      shift
+      ;;
+    --from-cluster)
+      MIRROR_FROM_CLUSTER="true"
       shift
       ;;
     --password)
@@ -258,7 +283,8 @@ repo_valid "$RANCHER_REPO" \
 
 export INSTANCE EXTERNAL RANCHER_REPO RANCHER_IMAGE_TAG OUT RANCHER_PASSWORD
 export PREFER_STAGING DRY_RUN
-export MIRROR_REGISTRY MIRROR_ALL MIRROR_EXTENSION MIRROR_INSECURE MIRROR_K3K_TAG
+export MIRROR_REGISTRY MIRROR_ALL MIRROR_EXTENSION MIRROR_INSECURE MIRROR_K3K_TAG AIRGAP
+export MIRROR_FROM_CLUSTER MIRROR_K3S_VERSIONS
 export DASHBOARD_SRC DASHBOARD_DIST DASHBOARD_BRANCH NODE_BIN KUBECONFIG RANCHER_HOST
 
 load_core() {
@@ -286,6 +312,8 @@ load_core() {
   . "$MUSTER_HOME/lib/plan.sh"
   # shellcheck source=lib/mirror.sh
   . "$MUSTER_HOME/lib/mirror.sh"
+  # shellcheck source=lib/airgap.sh
+  . "$MUSTER_HOME/lib/airgap.sh"
   # shellcheck source=/dev/null
   . "$MUSTER_HOME/drivers/${PROVIDER}.sh"
   # k3d and the docker standalone driver both drive a local container daemon; on
@@ -311,6 +339,11 @@ cmd_up() {
     export EXTERNAL_HOSTNAME="${tunnel_url#https://}"
   fi
 
+  if is_true "${AIRGAP:-}"; then
+    [ -n "$MIRROR_REGISTRY" ] || die "--airgap needs --registry <host[:port]>"
+    airgap_registry_up "$MIRROR_REGISTRY"
+    airgap_verify_registry "$MIRROR_REGISTRY" "${MIRROR_INSECURE:-}"
+  fi
   branches_apply_k3s_image
   driver_up
   local kc host
@@ -351,6 +384,11 @@ cmd_warmup() {
 cmd_down() {
   tunnel_down
   driver_down
+  # Keep the mirror unless it was asked for by name: refilling it costs minutes,
+  # and a following run reuses it as-is.
+  if is_true "${AIRGAP:-}"; then
+    airgap_registry_down
+  fi
 }
 cmd_build_ui() { buildui_run; }
 
@@ -401,6 +439,7 @@ EOF
   mirror)
     load_core
     [ -n "$MIRROR_REGISTRY" ] || die "mirror needs --registry <host[:port]>"
+    airgap_registry_up "$MIRROR_REGISTRY"
     mirror_run "$MIRROR_REGISTRY"
     ;;
   down)

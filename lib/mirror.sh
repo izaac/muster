@@ -26,8 +26,10 @@ _MUSTER_MIRROR_SH=1
 # Left out: RKE2, the cloud operators (EKS/AKS/GKE), Harvester, monitoring,
 # NeuVector and the CAPI providers. Use --mirror-all when any of those matter.
 
-# The server and the local cluster it runs.
-MUSTER_MIRROR_SERVER_FAMILIES="rancher rancher-agent shell rancher-webhook fleet fleet-agent gitjob system-agent kuberlr-kubectl ui-plugin-catalog remotedialer-proxy"
+# The server and the local cluster it runs. Rancher installs these itself on
+# first start, so a missing one is not an install failure but a controller that
+# never becomes ready.
+MUSTER_MIRROR_SERVER_FAMILIES="rancher rancher-agent shell rancher-webhook fleet fleet-agent gitjob helmop system-agent system-upgrade-controller kuberlr-kubectl ui-plugin-catalog remotedialer-proxy scc-operator turtles cluster-api-controller kubectl"
 
 # Provisioning a k3s cluster: the installer image system-agent fetches, the node
 # driver, and the images k3s itself starts on a new node.
@@ -160,8 +162,27 @@ mirror_plan() {
       # K3K starts a k3s server for every virtual cluster it creates. That image
       # is in no Rancher image list, because k3s is not a Rancher component.
       printf 'rancher/k3s:%s\n' "$(mirror_k3s_tag)"
+      local v
+      while read -r v; do
+        [ -n "$v" ] && printf 'rancher/k3s:%s\n' "$v"
+      done < <(mirror_k3s_offered_tags "${MIRROR_K3S_VERSIONS:-3}")
     fi
   } | sed '/^[[:space:]]*$/d' | sort -u
+}
+
+# mirror_cluster_images <kubeconfig> <registry> - images a running cluster asks
+# for that the mirror does not have, on stdout.
+#
+# The published image list belongs to a release, and a prerelease server ships
+# newer components than the release it is built from: a 2.15.1-alpha1 server
+# wants fleet v0.16.1-beta.1 where the 2.15.0 list names v0.16.0. No list can
+# be right about that, but the cluster itself knows exactly what it is asking
+# for, so ask it and mirror the difference.
+mirror_cluster_images() {
+  local kc="${1:?kubeconfig required}" reg="${2:?registry required}"
+  kubectl --kubeconfig "$kc" get pods -A -o jsonpath='{range .items[*]}{range .spec.containers[*]}{.image}{"\n"}{end}{range .spec.initContainers[*]}{.image}{"\n"}{end}{end}' 2>/dev/null \
+    | sed "s|^${reg}/||" \
+    | sed '/^$/d' | sort -u
 }
 
 # mirror_k3k_tag - newest K3K release, or a pinned MIRROR_K3K_TAG. K3K versions
@@ -174,6 +195,22 @@ mirror_k3k_tag() {
   local tag
   tag="$(image_newest_ga docker.io/rancher/k3k)"
   printf 'v%s' "${tag:-1.1.0}"
+}
+
+# mirror_k3s_offered_tags [count] - the newest k3s images, as the extension's
+# version dropdown lists them.
+#
+# K3K is told "rancher/k3s" with no tag and appends the version the virtual
+# cluster asks for, so whichever entry the operator picks in the UI is the tag
+# that gets pulled. There is no way to know that in advance, so mirror the
+# newest few and let MIRROR_K3S_VERSIONS widen it.
+mirror_k3s_offered_tags() {
+  local count="${1:-3}"
+  command -v skopeo >/dev/null 2>&1 || return 0
+  skopeo list-tags docker://docker.io/rancher/k3s 2>/dev/null \
+    | sed -n 's/.*"\(.*\)".*/\1/p' \
+    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-k3s[0-9]+$' \
+    | sort -V | tail -"$count"
 }
 
 # mirror_k3s_tag - the k3s version K3K should start for a virtual cluster.
@@ -193,14 +230,26 @@ mirror_k3s_tag() {
 }
 
 # mirror_run <registry> - copy everything the plan names into the registry.
+#
+# With MIRROR_FROM_CLUSTER set, the plan is instead whatever a running cluster
+# is asking for. That covers the components a prerelease server pulls in that no
+# published list names.
 mirror_run() {
   local reg="${1:?registry required}" insecure="${MIRROR_INSECURE:-}"
   require_cmd skopeo
 
-  helm_resolve_version
-
   local plan total=0 done_n=0 failed=0 ref src dst
-  plan="$(mirror_plan)"
+  if is_true "${MIRROR_FROM_CLUSTER:-}"; then
+    local kc
+    kc="$(driver_kubeconfig)"
+    local node_reg
+    node_reg="$(airgap_registry_host "$reg")"
+    plan="$(mirror_cluster_images "$kc" "$node_reg")"
+    log_info "filling gaps from the running cluster"
+  else
+    helm_resolve_version
+    plan="$(mirror_plan)"
+  fi
   total="$(printf '%s\n' "$plan" | wc -l | tr -d ' ')"
 
   log_info "mirroring $total images to ${reg}"
@@ -225,6 +274,8 @@ mirror_run() {
   # The server image is the one thing that must be right, so prove it landed and
   # report the flavour: a mirror that quietly holds a community build would fail
   # much later, when a Prime-only extension refuses to load.
+  is_true "${MIRROR_FROM_CLUSTER:-}" && return 0
+
   local server_dst flavour
   server_dst="$(mirror_dest_ref "${RANCHER_IMAGE:-rancher/rancher}:${RANCHER_IMAGE_TAG_RESOLVED}" "$reg")"
   flavour="$(MUSTER_REGISTRY_INSECURE="$insecure" image_prime_flavour "${server_dst%:*}" "${server_dst##*:}")"

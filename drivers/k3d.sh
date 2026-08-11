@@ -113,6 +113,14 @@ driver_up() {
     -p "$(k3d_http_port):80@loadbalancer"
     --wait --timeout 180s
   )
+  # Airgap: every node resolves the upstream registries to the mirror, so a pull
+  # that is not covered by the mirror fails instead of silently reaching out.
+  if is_true "${AIRGAP:-}"; then
+    local reg_conf
+    reg_conf="$(airgap_write_registries "$MIRROR_REGISTRY" "${MIRROR_INSECURE:-}")"
+    create_args+=(--registry-config "$reg_conf")
+    log_info "airgap: nodes mirror through ${MIRROR_REGISTRY}"
+  fi
   # Podman (rootless or rootful) needs the socket k3d bind-mounts into its nodes
   # pointed at the real podman socket (k3d defaults to /var/run/docker.sock,
   # absent on podman-only hosts). Rootless podman additionally runs the k3s
@@ -145,6 +153,12 @@ driver_up() {
 
   log_info "k3d: creating cluster $INSTANCE"
   k3d "${create_args[@]}"
+
+  # The registry serves the nodes over the cluster network, so it has to be on
+  # it. The network only exists once the cluster does, hence attaching here.
+  if is_true "${AIRGAP:-}"; then
+    airgap_registry_attach "$(k3d_network)"
+  fi
 
   # Join the cluster network so the gates can reach the serverlb at its bridge IP
   # (<ip>.sslip.io). On Docker Desktop the bridge lives inside the VM and is not

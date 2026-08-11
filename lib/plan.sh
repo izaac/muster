@@ -62,6 +62,27 @@ plan_report() {
     plan_row "agent TLS" "chart default"
   fi
 
+  # Which UI gets served is not implied by the image tag, and on a rolling tag it
+  # changes between runs, so say it before the run rather than after a result.
+  local ui_from
+  if [ -n "${DASHBOARD_DIST:-}" ]; then
+    plan_row ui "$DASHBOARD_DIST  (mounted over the pod)"
+  else
+    ui_from="$(ui_source "$image" "$tag")"
+    case "$ui_from" in
+      '') plan_row ui "unknown  (could not read the image config)" ;;
+      image) plan_row ui "the image  (a release build serves what it embeds)" ;;
+      *)
+        plan_row ui "$ui_from"
+        if ui_pin_is_free "$image" "$tag"; then
+          plan_row "" "rebuilt continuously; --ui-offline pins it to the same branch UI"
+        else
+          plan_row "" "rebuilt continuously; the image embeds a released UI, so pinning would change what is tested"
+        fi
+        ;;
+    esac
+  fi
+
   # A community line stops receiving patches at some point and the rest ship to
   # the prime registries, so say when a newer patch exists somewhere else.
   local hint

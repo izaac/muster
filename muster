@@ -308,6 +308,8 @@ load_core() {
   . "$MUSTER_HOME/lib/node.sh"
   # shellcheck source=lib/branches.sh
   . "$MUSTER_HOME/lib/branches.sh"
+  # shellcheck source=lib/ui.sh
+  . "$MUSTER_HOME/lib/ui.sh"
   # shellcheck source=lib/plan.sh
   . "$MUSTER_HOME/lib/plan.sh"
   # shellcheck source=lib/mirror.sh

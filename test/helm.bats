@@ -685,3 +685,25 @@ _resolve_with_override() {
   _resolve_with_override
   [ "$RANCHER_IMAGE_TAG_RESOLVED" = "v2.15.1-alpha1" ]
 }
+
+@test "a full reference override moves the registry as well as the tag" {
+  RANCHER_IMAGE_TAG_OVERRIDE=rancher/rancher:head
+  _resolve_with_override
+  [ "$RANCHER_IMAGE" = "rancher/rancher" ]
+  [ "$RANCHER_IMAGE_TAG_RESOLVED" = "head" ]
+  [ "$RANCHER_CHART_VERSION" = "2.15.1-alpha1" ]
+}
+
+@test "a full reference override accepts a registry host" {
+  RANCHER_IMAGE_TAG_OVERRIDE=docker.io/rancher/rancher:v2.15-head
+  _resolve_with_override
+  [ "$RANCHER_IMAGE" = "docker.io/rancher/rancher" ]
+  [ "$RANCHER_IMAGE_TAG_RESOLVED" = "v2.15-head" ]
+}
+
+@test "a bare tag override leaves the channel registry in place" {
+  RANCHER_IMAGE_TAG_OVERRIDE=v2.15.1-965e189-head
+  _resolve_with_override
+  [ "$RANCHER_IMAGE" = "stgregistry.suse.com/rancher/rancher" ]
+  [ "$RANCHER_IMAGE_TAG_RESOLVED" = "v2.15.1-965e189-head" ]
+}

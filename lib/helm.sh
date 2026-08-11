@@ -578,9 +578,20 @@ helm_resolve_version() {
   # A branch head ships no chart of its own, so testing one means running it
   # against the newest chart of the line it came from. That pairing cannot be
   # derived, since the two do not share a version, so it is stated instead.
+  #
+  # A full reference also moves the registry, because the build wanted is not
+  # always in the channel's own registry: Prime publishes no master head, so
+  # pairing a Prime chart with one means crossing to Docker Hub.
   if [ -n "${RANCHER_IMAGE_TAG_OVERRIDE:-}" ]; then
-    RANCHER_IMAGE_TAG_RESOLVED="$RANCHER_IMAGE_TAG_OVERRIDE"
-    log_info "image tag overridden: $RANCHER_IMAGE_TAG_RESOLVED (chart stays $RANCHER_CHART_VERSION)"
+    local ovr="$RANCHER_IMAGE_TAG_OVERRIDE"
+    case "$ovr" in
+      */*)
+        RANCHER_IMAGE="${ovr%:*}"
+        RANCHER_IMAGE_TAG_RESOLVED="${ovr##*:}"
+        ;;
+      *) RANCHER_IMAGE_TAG_RESOLVED="$ovr" ;;
+    esac
+    log_info "image overridden: ${RANCHER_IMAGE:-rancher/rancher}:${RANCHER_IMAGE_TAG_RESOLVED} (chart stays $RANCHER_CHART_VERSION)"
   fi
   export RANCHER_CHART_URL RANCHER_IMAGE RANCHER_CHART_VERSION RANCHER_IMAGE_TAG_RESOLVED
   log_info "resolved: repo=$repo chart=$RANCHER_CHART_VERSION image=${RANCHER_IMAGE:-rancher/rancher} tag=$RANCHER_IMAGE_TAG_RESOLVED"

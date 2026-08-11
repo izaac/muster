@@ -79,6 +79,23 @@ Note that Prime publishes no master head. The 2.16 builds on the staging
 registry report `RANCHER_VERSION_TYPE=` and are Community, so the newest Prime
 head is on the highest cut release branch, not on master.
 
+A value containing a `/` is taken as a full reference and moves the registry
+too, which is how a chart from one channel is paired with an image from
+another:
+
+```sh
+# Prime alpha chart, Community master head server
+muster up --provider k3d --repo rancher-alpha --version head \
+  --image-tag rancher/rancher:head
+```
+
+The chart pins the components while the server decides what it is, so that
+pairing installs the Prime staging webhook and shell images under a Community
+server that reports `RancherPrime: false`. It comes up and the UI works, which
+is worth knowing in both directions: the chart channel is not a reliable
+statement about the build, and a component set can be varied independently of
+the server to reproduce a version skew.
+
 ### Channels
 
 | `--repo` | Chart repository | Image | Notes |

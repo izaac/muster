@@ -236,11 +236,30 @@ image_tag_suggestions() {
     | sort -V -t'|' -k1,1 -k2,2 | tail -5 | cut -d'|' -f2 || true
 }
 
+# image_tag_is_valid <tag> - the OCI tag grammar: an alphanumeric or underscore
+# first, then up to 127 more of alphanumeric, dot, dash or underscore.
+#
+# Worth checking separately because the common way to get this wrong is a
+# Kubernetes version, where "+" carries the build metadata (v1.35.2+k3s1) and is
+# legal there but not in a tag. The registry has no say in it.
+image_tag_is_valid() {
+  case "${1:?tag required}" in
+    '' | [!A-Za-z0-9_]*) return 1 ;;
+    *[!A-Za-z0-9._-]*) return 1 ;;
+  esac
+  [ "${#1}" -le 128 ]
+}
+
 # image_exists <image> <tag> - 0 the tag exists, 1 the registry says it does
 # not, 2 no usable answer (gated registry, no credentials, network trouble).
 # Only a definitive 1 is worth failing a run over.
 image_exists() {
   local image="${1:?image required}" tag="${2:?tag required}" out rc
+  # A tag no registry can hold is a definitive no, not an inconclusive one.
+  # skopeo rejects it as "invalid reference format", which is neither a 404 nor
+  # a transport problem, so without this it would downgrade to a warning and the
+  # run would proceed to a pull that cannot succeed.
+  image_tag_is_valid "$tag" || return 1
   if command -v skopeo >/dev/null 2>&1; then
     out="$(skopeo inspect --raw "docker://${image}:${tag}" 2>&1)" && return 0
     case "$out" in

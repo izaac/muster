@@ -587,6 +587,38 @@ _helm_args_for_external() {
 # Docker Hub publishes vX.Y.Z and vX.Y-head but never a bare vX.Y, so passing a
 # bare minor through would ask for a tag that cannot exist.
 
+@test "image_tag_is_valid accepts the tags a registry can hold" {
+  for t in head v2.15-head 2.15.0-rc5 v1.35.2-k3s1 _weird 1.2.3_4; do
+    run image_tag_is_valid "$t"
+    [ "$status" -eq 0 ] || {
+      echo "rejected a legal tag: $t"
+      false
+    }
+  done
+}
+
+@test "image_tag_is_valid rejects a kubernetes build-metadata version" {
+  run image_tag_is_valid "v1.35.2+k3s1"
+  [ "$status" -ne 0 ]
+}
+
+@test "image_tag_is_valid rejects an empty tag, a bad first character or a slash" {
+  for t in "" "-leading" ".leading" "a/b" "a:b" "a b"; do
+    run image_tag_is_valid "$t"
+    [ "$status" -ne 0 ] || {
+      echo "accepted an illegal tag: '$t'"
+      false
+    }
+  done
+}
+
+@test "image_exists calls an unusable tag missing rather than inconclusive" {
+  # skopeo answers "invalid reference format", which matches none of the 404
+  # patterns, so without the grammar check this would downgrade to a warning.
+  run image_exists rancher/k3s "v1.35.2+k3s1"
+  [ "$status" -eq 1 ]
+}
+
 @test "tag_is_bare_minor recognises a plain minor, with or without the v" {
   run tag_is_bare_minor 2.14
   [ "$status" -eq 0 ]

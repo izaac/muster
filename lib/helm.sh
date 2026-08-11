@@ -575,6 +575,13 @@ helm_resolve_version() {
   fi
 
   RANCHER_IMAGE_TAG_RESOLVED="$(resolve_image_tag "$RANCHER_IMAGE" "$RANCHER_CHART_VERSION" "$tag")"
+  # A branch head ships no chart of its own, so testing one means running it
+  # against the newest chart of the line it came from. That pairing cannot be
+  # derived, since the two do not share a version, so it is stated instead.
+  if [ -n "${RANCHER_IMAGE_TAG_OVERRIDE:-}" ]; then
+    RANCHER_IMAGE_TAG_RESOLVED="$RANCHER_IMAGE_TAG_OVERRIDE"
+    log_info "image tag overridden: $RANCHER_IMAGE_TAG_RESOLVED (chart stays $RANCHER_CHART_VERSION)"
+  fi
   export RANCHER_CHART_URL RANCHER_IMAGE RANCHER_CHART_VERSION RANCHER_IMAGE_TAG_RESOLVED
   log_info "resolved: repo=$repo chart=$RANCHER_CHART_VERSION image=${RANCHER_IMAGE:-rancher/rancher} tag=$RANCHER_IMAGE_TAG_RESOLVED"
   helm_verify_image

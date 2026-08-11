@@ -650,3 +650,38 @@ _helm_args_for_external() {
 @test "a pinned-image channel is unaffected by the bare-minor rule" {
   [ "$(resolve_image_tag stgregistry.suse.com/rancher/rancher 2.14.4-rc1 2.14)" = "v2.14.4-rc1" ]
 }
+
+# --- image tag override ------------------------------------------------------
+# A branch head ships no chart of its own, so it can only be tested against the
+# newest chart of the line it came from. The two do not share a version, so the
+# pairing has to be stated rather than derived.
+
+_resolve_with_override() {
+  RANCHER_REPO=rancher-alpha RANCHER_IMAGE_TAG=head
+  freshness_maybe_promote() { :; }
+  require_cmd() { :; }
+  retry() { :; }
+  helm() { :; }
+  helm_verify_image() { :; }
+  resolve_chart_version() { printf '2.15.1-alpha1'; }
+  helm_resolve_version
+}
+
+@test "an image tag override replaces the resolved tag and keeps the chart" {
+  RANCHER_IMAGE_TAG_OVERRIDE=v2.15.1-965e189-head
+  _resolve_with_override
+  [ "$RANCHER_IMAGE_TAG_RESOLVED" = "v2.15.1-965e189-head" ]
+  [ "$RANCHER_CHART_VERSION" = "2.15.1-alpha1" ]
+}
+
+@test "without an override the tag still comes from the chart version" {
+  unset RANCHER_IMAGE_TAG_OVERRIDE
+  _resolve_with_override
+  [ "$RANCHER_IMAGE_TAG_RESOLVED" = "v2.15.1-alpha1" ]
+}
+
+@test "an empty override is ignored rather than blanking the tag" {
+  RANCHER_IMAGE_TAG_OVERRIDE=""
+  _resolve_with_override
+  [ "$RANCHER_IMAGE_TAG_RESOLVED" = "v2.15.1-alpha1" ]
+}

@@ -88,6 +88,11 @@ Flags:
                                     Also honoured via PREFER_STAGING env.
   --password <secret>               Rancher bootstrap/admin password (default:
                                     RANCHER_PASSWORD env, else password1234).
+  --image-tag <tag>                 Install this server image tag against the
+                                    chart --version resolves to. For a build
+                                    that ships no chart of its own, such as a
+                                    branch head. The tag must exist in the
+                                    channel's registry.
   --out <env|cypress|json>          Handoff format (default: env).
   --dashboard-src <path>            rancher/dashboard checkout to build (build-ui).
   --dashboard-branch <name>         Force the UI branch (build-ui); default derives
@@ -130,6 +135,7 @@ MIRROR_INSECURE="${MIRROR_INSECURE:-false}"
 AIRGAP="${AIRGAP:-false}"
 MIRROR_FROM_CLUSTER="${MIRROR_FROM_CLUSTER:-false}"
 RANCHER_PASSWORD="${RANCHER_PASSWORD:-password1234}"
+RANCHER_IMAGE_TAG_OVERRIDE="${RANCHER_IMAGE_TAG_OVERRIDE:-}"
 OUT="${OUT:-env}"
 DASHBOARD_SRC="${DASHBOARD_SRC:-}"
 DASHBOARD_DIST="${DASHBOARD_DIST:-}"
@@ -226,6 +232,10 @@ while [ $# -gt 0 ]; do
       RANCHER_PASSWORD="${2:?--password needs a value}"
       shift 2
       ;;
+    --image-tag)
+      RANCHER_IMAGE_TAG_OVERRIDE="${2:?--image-tag needs a value}"
+      shift 2
+      ;;
     --out)
       OUT="${2:?--out needs a value}"
       shift 2
@@ -282,6 +292,7 @@ repo_valid "$RANCHER_REPO" \
   || die "unknown --repo: $RANCHER_REPO ($(repo_keys | tr -s ' ' '|' | sed 's/|$//'))"
 
 export INSTANCE EXTERNAL RANCHER_REPO RANCHER_IMAGE_TAG OUT RANCHER_PASSWORD
+export RANCHER_IMAGE_TAG_OVERRIDE
 export PREFER_STAGING DRY_RUN
 export MIRROR_REGISTRY MIRROR_ALL MIRROR_EXTENSION MIRROR_INSECURE MIRROR_K3K_TAG AIRGAP
 export MIRROR_FROM_CLUSTER MIRROR_K3S_VERSIONS

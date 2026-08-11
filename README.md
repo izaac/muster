@@ -55,6 +55,30 @@ muster up --dry-run --repo rancher-alpha --version 2.15
 muster up --provider k3d --repo rancher-com-alpha --version head
 ```
 
+### Testing a branch head on Prime
+
+A branch head ships no chart of its own, so `--version head` on a Prime channel
+resolves the newest chart in that channel and takes its tag, which is the last
+alpha rather than the head build. `--image-tag` overrides the image while
+leaving the chart alone:
+
+```sh
+# Newest Prime chart, running the current release-2.15 head build
+muster up --provider k3d --repo rancher-alpha --version head \
+  --image-tag v2.15.1-965e1896835ebcb961689a35f4bfe34e43ce2a4d-head
+```
+
+Prime head builds are tagged by commit, so the tag has to be looked up:
+
+```sh
+skopeo list-tags docker://stgregistry.suse.com/rancher/rancher \
+  | grep -oE '"v2\.15[^"]*-head"'
+```
+
+Note that Prime publishes no master head. The 2.16 builds on the staging
+registry report `RANCHER_VERSION_TYPE=` and are Community, so the newest Prime
+head is on the highest cut release branch, not on master.
+
 ### Channels
 
 | `--repo` | Chart repository | Image | Notes |

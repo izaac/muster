@@ -23,7 +23,11 @@ k3d_index() {
   esac
 }
 
-k3d_network() { echo "k3d-${INSTANCE}"; }
+# k3d_network - the cluster network. MUSTER_K3D_NETWORK overrides it so a second
+# cluster (an imported downstream) can join the management cluster's network
+# instead of creating its own, which is how its nodes reach the shared registry
+# and its agent reaches the management Rancher. Defaults to this instance's own.
+k3d_network() { echo "${MUSTER_K3D_NETWORK:-k3d-${INSTANCE}}"; }
 k3d_https_port() { echo $(($(k3d_index) + 8443)); }
 k3d_http_port() { echo $(($(k3d_index) + 8080)); }
 
@@ -113,13 +117,15 @@ driver_up() {
     -p "$(k3d_http_port):80@loadbalancer"
     --wait --timeout 180s
   )
-  # Airgap: every node resolves the upstream registries to the mirror, so a pull
-  # that is not covered by the mirror fails instead of silently reaching out.
+  # Airgap: every node resolves the upstream registries to the mirror, and to the
+  # mirror only. The containerd certs.d tree is mounted in rather than handed to
+  # k3s as a registries.yaml, because k3s would re-add an upstream fallback that
+  # lets a pull the mirror does not cover slip out to the internet.
   if is_true "${AIRGAP:-}"; then
-    local reg_conf
-    reg_conf="$(airgap_write_registries "$MIRROR_REGISTRY" "${MIRROR_INSECURE:-}")"
-    create_args+=(--registry-config "$reg_conf")
-    log_info "airgap: nodes mirror through ${MIRROR_REGISTRY}"
+    local certs_dir
+    certs_dir="$(airgap_write_certs_d "$MIRROR_REGISTRY" "${MIRROR_INSECURE:-}")"
+    create_args+=(-v "${certs_dir}:/var/lib/rancher/k3s/agent/etc/containerd/certs.d@server:*")
+    log_info "airgap: nodes resolve every registry to ${MIRROR_REGISTRY} only (no fallback)"
   fi
   # Podman (rootless or rootful) needs the socket k3d bind-mounts into its nodes
   # pointed at the real podman socket (k3d defaults to /var/run/docker.sock,

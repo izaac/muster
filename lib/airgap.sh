@@ -5,7 +5,9 @@
 # locally would mean a docker network with no route out. What matters for
 # testing the install is narrower: every image must come from the mirror. That
 # is a containerd concern, so it is expressed the way containerd expresses it,
-# with a registries.yaml that mirrors the upstream registries onto ours.
+# with a per-registry certs.d/hosts.toml that mirrors each upstream registry
+# onto ours - and, critically, with no upstream fallback, so the mirror is the
+# only place an image can come from.
 #
 # Mirroring at the container runtime rather than through systemDefaultRegistry
 # is deliberate. systemDefaultRegistry rewrites the names Rancher asks for, so a
@@ -13,6 +15,13 @@
 # the names alone, so anything absent from the mirror fails as a plain pull
 # error naming the image we forgot. That is the failure we want while we are
 # still establishing what a complete mirror contains.
+#
+# The fallback matters enough to spell out: k3s, handed a registries.yaml, turns
+# each mirror into a hosts.toml that also carries "server = <upstream>", which
+# containerd tries on a 404. With the nodes on a network that can reach the
+# internet, that quietly turns a missing image into an internet pull, so a gap
+# in the mirror passes as green. muster writes the hosts.toml files itself,
+# without the server line, to keep the mirror authoritative.
 
 [ -n "${_MUSTER_AIRGAP_SH:-}" ] && return 0
 _MUSTER_AIRGAP_SH=1
@@ -27,7 +36,12 @@ MUSTER_REGISTRY_NAME_PREFIX="muster-registry"
 MUSTER_REGISTRY_PORT=5000
 
 # airgap_registry_name - container name of the registry for this instance.
-airgap_registry_name() { printf '%s-%s' "$MUSTER_REGISTRY_NAME_PREFIX" "${INSTANCE:-e2e}"; }
+#
+# MUSTER_REGISTRY_INSTANCE overrides which instance the registry name is keyed
+# to, defaulting to INSTANCE. An imported downstream cluster runs under its own
+# INSTANCE but must reach the management instance's registry, so it sets this to
+# the management instance and leaves the name pointing at the shared registry.
+airgap_registry_name() { printf '%s-%s' "$MUSTER_REGISTRY_NAME_PREFIX" "${MUSTER_REGISTRY_INSTANCE:-${INSTANCE:-e2e}}"; }
 
 # airgap_registry_host - the mirror as the cluster nodes must address it.
 #
@@ -51,6 +65,25 @@ airgap_registry_is_local() {
   case "${1:?registry required}" in
     localhost | localhost:* | 127.0.0.1 | 127.0.0.1:* | 0.0.0.0:*) return 0 ;;
     *) return 1 ;;
+  esac
+}
+
+# airgap_repo_path <image> - the repository path of an image with any registry
+# host stripped, so "stgregistry.suse.com/rancher/rancher" becomes "rancher/
+# rancher" and a bare "rancher/rancher" is left alone. A first path element that
+# looks like a registry (contains a dot or a colon, or is localhost) is dropped.
+#
+# This is what an airgapped agent image must be handed. Rancher prefixes
+# systemDefaultRegistry onto CATTLE_AGENT_IMAGE, so a fully qualified value would
+# become <mirror>/<upstream-host>/rancher/rancher-agent, a path the mirror does
+# not carry: the mirror keeps the repository path only. Unlike the server image,
+# which containerd redirects by swapping its host, the agent reference is built
+# by Rancher and never passes through that host-swap.
+airgap_repo_path() {
+  local image="${1:?image required}"
+  case "${image%%/*}" in
+    localhost | localhost:* | *.* | *:*) printf '%s' "${image#*/}" ;;
+    *) printf '%s' "$image" ;;
   esac
 }
 
@@ -104,38 +137,48 @@ airgap_registry_down() {
   log_info "airgap: removed registry $name"
 }
 
-# airgap_registries_yaml <registry> [insecure] - a containerd registry config
-# mirroring the upstream registries onto the given one, on stdout.
-airgap_registries_yaml() {
+# airgap_hosts_toml <registry> [insecure] - a containerd hosts.toml body that
+# resolves a registry to the mirror and to the mirror ONLY, on stdout.
+#
+# The point of interest is what is NOT here: a "server" line. k3s's own
+# registries.yaml generation always writes "server = <upstream>", which
+# containerd treats as a fallback and tries whenever the mirror answers 404 - so
+# an image absent from the mirror is silently pulled from the internet, and a
+# mirror gap passes as green. Omitting server makes a missing image fail as a 404
+# that names it, which is the whole point of testing against an airgap. The body
+# is identical for every upstream registry because they all mirror to the same
+# endpoint, including the mirror standing in for itself (systemDefaultRegistry
+# makes Rancher ask for images by the mirror's own name).
+airgap_hosts_toml() {
   local reg
   reg="$(airgap_registry_host "${1:?registry required}")"
-  local insecure="${2:-}" r
-
-  local scheme=https
+  local insecure="${2:-}" scheme=https
   is_true "$insecure" && scheme=http
 
-  # The mirror stands in for the upstream registries, and also for itself:
-  # systemDefaultRegistry makes Rancher ask for images by the mirror's own name,
-  # and such a request is not covered by a rule for some other registry. Without
-  # an entry of its own containerd would default to HTTPS and fail against a
-  # plain registry with "server gave HTTP response to HTTPS client".
-  printf 'mirrors:\n'
-  for r in $MUSTER_AIRGAP_MIRRORED_REGISTRIES "$reg"; do
-    printf '  "%s":\n    endpoint:\n      - "%s://%s"\n' "$r" "$scheme" "$reg"
-  done
-
-  if is_true "$insecure"; then
-    printf 'configs:\n  "%s":\n    tls:\n      insecure_skip_verify: true\n' "$reg"
-  fi
+  printf '[host."%s://%s/v2"]\n  capabilities = ["pull", "resolve"]\n' "$scheme" "$reg"
+  is_true "$insecure" && printf '  skip_verify = true\n'
 }
 
-# airgap_write_registries <registry> [insecure] - write the config and print its
-# path. k3d reads it at cluster creation and installs it on every node.
-airgap_write_registries() {
-  local reg="${1:?registry required}" insecure="${2:-}" path
-  path="${MUSTER_AIRGAP_REGISTRIES_FILE:-${TMPDIR:-/tmp}/muster-registries-${INSTANCE:-e2e}.yaml}"
-  airgap_registries_yaml "$reg" "$insecure" >"$path"
-  printf '%s' "$path"
+# airgap_write_certs_d <registry> [insecure] - write a containerd certs.d tree
+# (one <registry>/hosts.toml per mirrored registry, plus the mirror itself) and
+# print the directory. k3d bind-mounts it into the node at the containerd
+# registry config_path, which k3s points at certs.d by default.
+#
+# This replaces handing k3s a registries.yaml: k3s would turn that into the same
+# hosts.toml but with the upstream fallback added back, which is exactly what the
+# airgap must not have. Writing the files directly keeps the mirror authoritative.
+airgap_write_certs_d() {
+  local reg="${1:?registry required}" insecure="${2:-}"
+  local mirror body dir r
+  mirror="$(airgap_registry_host "$reg")"
+  dir="${MUSTER_AIRGAP_CERTS_DIR:-${TMPDIR:-/tmp}/muster-certs-${INSTANCE:-e2e}}"
+  rm -rf "$dir"
+  body="$(airgap_hosts_toml "$reg" "$insecure")"
+  for r in $MUSTER_AIRGAP_MIRRORED_REGISTRIES "$mirror"; do
+    mkdir -p "$dir/$r"
+    printf '%s\n' "$body" >"$dir/$r/hosts.toml"
+  done
+  printf '%s' "$dir"
 }
 
 # airgap_verify_registry <registry> [insecure] - fail early when the mirror is

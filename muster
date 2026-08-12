@@ -39,6 +39,7 @@ Commands:
   wait      Run readiness gates against an existing instance.
   tunnel    Manage the cloudflared quick tunnel (external mode).
   warmup    Prime the provisioning controller to avoid the cold-start flake.
+  import    Create a second k3d cluster and import it into the management Rancher.
   mirror    Copy the images an airgapped install needs into a registry.
   down      Tear down the cluster and sweep tunnel + substrate state.
   env       Print the consumer handoff for the current instance.
@@ -80,6 +81,14 @@ Flags:
   --from-cluster                    For `mirror`: copy what the running cluster
                                     is asking for, filling what no published
                                     image list names.
+  --import-instance <name>          For `import`: the downstream k3d instance to
+                                    create (e2e-<n>). Defaults to the first free
+                                    one. It joins the management network and
+                                    shares its mirror.
+  --management-instance <name>      For `down` of a downstream: the instance
+                                    whose Rancher registered it (default: e2e).
+                                    `down` deregisters the imported cluster
+                                    before deleting it.
   --prefer-staging                  Keep-fresh: when the tag is a rolling head
                                     tag (head / vX.Y-head) and the newest SUSE
                                     staging build (rancher-latest/-alpha) is
@@ -113,6 +122,7 @@ Examples:
   muster build-ui --dashboard-src ~/repos/dashboard --version head
   muster up --provider k3d --dashboard-dist ~/repos/dashboard/dist
   muster up --provider k3d --external --repo rancher-alpha --version head
+  muster import --provider k3d --airgap --registry localhost:5000 --insecure-registry
   muster up --provider existing --kubeconfig ~/.kube/config --rancher-host rancher.example.com --out cypress
   muster down
 USAGE
@@ -134,6 +144,8 @@ MIRROR_K3S_VERSIONS="${MIRROR_K3S_VERSIONS:-3}"
 MIRROR_INSECURE="${MIRROR_INSECURE:-false}"
 AIRGAP="${AIRGAP:-false}"
 MIRROR_FROM_CLUSTER="${MIRROR_FROM_CLUSTER:-false}"
+IMPORT_INSTANCE="${IMPORT_INSTANCE:-}"
+MANAGEMENT_INSTANCE="${MANAGEMENT_INSTANCE:-}"
 RANCHER_PASSWORD="${RANCHER_PASSWORD:-password1234}"
 RANCHER_IMAGE_TAG_OVERRIDE="${RANCHER_IMAGE_TAG_OVERRIDE:-}"
 OUT="${OUT:-env}"
@@ -228,6 +240,14 @@ while [ $# -gt 0 ]; do
       MIRROR_FROM_CLUSTER="true"
       shift
       ;;
+    --import-instance)
+      IMPORT_INSTANCE="${2:?--import-instance needs a value}"
+      shift 2
+      ;;
+    --management-instance)
+      MANAGEMENT_INSTANCE="${2:?--management-instance needs a value}"
+      shift 2
+      ;;
     --password)
       RANCHER_PASSWORD="${2:?--password needs a value}"
       shift 2
@@ -296,6 +316,7 @@ export RANCHER_IMAGE_TAG_OVERRIDE
 export PREFER_STAGING DRY_RUN
 export MIRROR_REGISTRY MIRROR_ALL MIRROR_EXTENSION MIRROR_INSECURE MIRROR_K3K_TAG AIRGAP
 export MIRROR_FROM_CLUSTER MIRROR_K3S_VERSIONS
+export IMPORT_INSTANCE MANAGEMENT_INSTANCE
 export DASHBOARD_SRC DASHBOARD_DIST DASHBOARD_BRANCH NODE_BIN KUBECONFIG RANCHER_HOST
 
 load_core() {
@@ -327,6 +348,8 @@ load_core() {
   . "$MUSTER_HOME/lib/mirror.sh"
   # shellcheck source=lib/airgap.sh
   . "$MUSTER_HOME/lib/airgap.sh"
+  # shellcheck source=lib/import.sh
+  . "$MUSTER_HOME/lib/import.sh"
   # shellcheck source=/dev/null
   . "$MUSTER_HOME/drivers/${PROVIDER}.sh"
   # k3d and the docker standalone driver both drive a local container daemon; on
@@ -394,8 +417,15 @@ cmd_warmup() {
   kc="$(driver_kubeconfig)"
   warmup_provisioning "$kc"
 }
+cmd_import() { import_run; }
 cmd_down() {
   tunnel_down
+  # An imported downstream is deregistered from its management Rancher before its
+  # k3d cluster is removed, so Rancher does not keep a dead cluster. The base
+  # instance is never a downstream, so a plain `down` is unaffected.
+  if import_is_downstream "$INSTANCE"; then
+    import_teardown
+  fi
   driver_down
   # Keep the mirror unless it was asked for by name: refilling it costs minutes,
   # and a following run reuses it as-is.
@@ -448,6 +478,10 @@ EOF
   warmup)
     load_core
     cmd_warmup
+    ;;
+  import)
+    load_core
+    cmd_import
     ;;
   mirror)
     load_core

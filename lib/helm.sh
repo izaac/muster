@@ -59,9 +59,10 @@ declare -gA MUSTER_REPO_IMAGE=(
 # most reproducible stance. For a version not pinned here, set
 # CERT_MANAGER_CRDS_SHA256 explicitly, or rely on the GitHub asset digest when
 # the upstream release carries one.
-CERT_MANAGER_VERSION_DEFAULT="v1.16.2"
+CERT_MANAGER_VERSION_DEFAULT="v1.19.4"
 declare -gA MUSTER_CERT_MANAGER_CRDS_SHA256=(
   ["v1.16.2"]="0555ce0be71aeedd59aa7e6c12e557f44b8df133634bfc5f2cf976b5887e1198"
+  ["v1.19.4"]="0e09c26d64fbdb56f2ea95b5b2350991980a184a9ce9a09d3a9a207594ce38b0"
 )
 
 # repo_valid <key> - true if the channel key is known.
@@ -598,18 +599,36 @@ helm_resolve_version() {
   helm_verify_image
 }
 
-# helm_install_rancher <kubeconfig> <hostname> - install cert-manager and
-# Rancher. Assumes helm_resolve_version has run (RANCHER_* exported and the
-# Rancher chart repo added). The cert-manager CRD manifest is SHA256-verified
-# before it is applied; its checksum comes from the GitHub release asset digest
-# unless CERT_MANAGER_CRDS_SHA256 pins it inline.
-helm_install_rancher() {
-  local kc="${1:?kubeconfig path required}" host="${2:?hostname required}"
-  local cmver="${CERT_MANAGER_VERSION:-$CERT_MANAGER_VERSION_DEFAULT}"
-  local pin="${CERT_MANAGER_CRDS_SHA256:-${MUSTER_CERT_MANAGER_CRDS_SHA256[$cmver]:-}}"
-  require_cmd kubectl
-  require_cmd helm
+# helm_cert_manager_oci_ref - the OCI reference for the cert-manager chart in the
+# mirror, or nothing when the install is not airgapped. helm on this host reaches
+# the mirror at its published address (MIRROR_REGISTRY, e.g. localhost:5000), not
+# by the in-cluster name the nodes use. The repository path mirrors the source
+# (quay.io/jetstack/charts/cert-manager) with its registry stripped, which is
+# what lib/mirror.sh copies it to.
+helm_cert_manager_oci_ref() {
+  is_true "${AIRGAP:-}" || return 0
+  [ -n "${MIRROR_REGISTRY:-}" ] || return 0
+  printf 'oci://%s/jetstack/charts/cert-manager' "$MIRROR_REGISTRY"
+}
 
+# helm_cert_manager_oci_available <oci_ref> <bare_version> - true when the chart
+# is actually in the mirror, so the caller can fall back rather than fail if the
+# mirror was filled without it.
+helm_cert_manager_oci_available() {
+  local ref="${1:?oci ref required}" ver="${2:?version required}"
+  command -v skopeo >/dev/null 2>&1 || return 1
+  local -a tls=()
+  is_true "${MIRROR_INSECURE:-}" && tls=(--tls-verify=false)
+  skopeo inspect --raw "${tls[@]}" "docker://${ref#oci://}:${ver}" >/dev/null 2>&1
+}
+
+# helm_install_cert_manager_upstream <kubeconfig> <cmver> - the non-airgap path:
+# fetch and SHA256-verify the CRD manifest from the GitHub release, apply it, then
+# install the chart from the jetstack repo. The checksum comes from the release
+# asset digest unless CERT_MANAGER_CRDS_SHA256 (or the source pin map) pins it.
+helm_install_cert_manager_upstream() {
+  local kc="${1:?kubeconfig path required}" cmver="${2:?cert-manager version required}"
+  local pin="${CERT_MANAGER_CRDS_SHA256:-${MUSTER_CERT_MANAGER_CRDS_SHA256[$cmver]:-}}"
   local crds
   crds="$(mktemp)"
   local crds_url="https://github.com/cert-manager/cert-manager/releases/download/${cmver}/cert-manager.crds.yaml"
@@ -630,12 +649,63 @@ helm_install_rancher() {
   helm --kubeconfig "$kc" upgrade --install cert-manager jetstack/cert-manager \
     --namespace cert-manager --create-namespace \
     --version "$cmver" --wait --timeout 5m
+}
+
+# helm_install_cert_manager <kubeconfig> - install cert-manager with its CRDs.
+#
+# Airgapped, the chart and its CRDs come from the mirror as an OCI artifact, so
+# nothing is fetched from charts.jetstack.io or a GitHub release. The chart's own
+# crds.enabled=true installs the CRDs, which removes the one external host fetch
+# an airgapped install otherwise still made. Otherwise, and as a fallback when the
+# mirror was filled without the chart, the upstream (verified GitHub CRDs +
+# jetstack repo) path is used.
+helm_install_cert_manager() {
+  local kc="${1:?kubeconfig path required}"
+  local cmver="${CERT_MANAGER_VERSION:-$CERT_MANAGER_VERSION_DEFAULT}"
+  require_cmd kubectl
+  require_cmd helm
+
+  local oci
+  oci="$(helm_cert_manager_oci_ref)"
+  if [ -n "$oci" ] && helm_cert_manager_oci_available "$oci" "${cmver#v}"; then
+    local -a args=(
+      --kubeconfig "$kc" upgrade --install cert-manager "$oci"
+      --version "${cmver#v}"
+      --namespace cert-manager --create-namespace
+      --set crds.enabled=true --wait --timeout 5m
+    )
+    is_true "${MIRROR_INSECURE:-}" && args+=(--plain-http)
+    log_info "cert-manager $cmver (mirror OCI chart, CRDs bundled)"
+    helm "${args[@]}"
+  else
+    [ -n "$oci" ] && log_warn "cert-manager OCI chart not in mirror; using jetstack repo + GitHub CRDs"
+    helm_install_cert_manager_upstream "$kc" "$cmver"
+  fi
   kubectl --kubeconfig "$kc" -n cert-manager rollout status \
     deploy/cert-manager-webhook --timeout=180s
+}
+
+# helm_install_rancher <kubeconfig> <hostname> - install cert-manager and
+# Rancher. Assumes helm_resolve_version has run (RANCHER_* exported and the
+# Rancher chart repo added).
+helm_install_rancher() {
+  local kc="${1:?kubeconfig path required}" host="${2:?hostname required}"
+  require_cmd kubectl
+  require_cmd helm
+
+  helm_install_cert_manager "$kc"
 
   local image="${RANCHER_IMAGE:-rancher/rancher}"
   local agent_image="${image%/*}/rancher-agent"
   local tag="$RANCHER_IMAGE_TAG_RESOLVED"
+  # Airgap hands the agent its repository path alone, because Rancher prefixes
+  # systemDefaultRegistry onto CATTLE_AGENT_IMAGE. A fully qualified value would
+  # resolve to <mirror>/<upstream-host>/rancher/rancher-agent, which the mirror
+  # does not hold; the bare path resolves to <mirror>/rancher/rancher-agent,
+  # which it does.
+  if is_true "${AIRGAP:-}"; then
+    agent_image="$(airgap_repo_path "$agent_image")"
+  fi
   log_info "rancher chart $RANCHER_CHART_VERSION (image ${image}:${tag})"
   local args=(
     upgrade --install rancher "${RANCHER_REPO}/rancher"

@@ -55,6 +55,15 @@ Flags:
                                     rancher-prime|rancher-prime-ga|rancher-latest|
                                     rancher-alpha|rancher-community|rancher-com-rc|
                                     rancher-com-alpha.
+  --channel-source <fixed|metadata> Where the channel and image come from
+                                    (default: fixed). metadata reads the branch
+                                    named by --version from the dashboard
+                                    branches-metadata.json: its registry key
+                                    decides Prime vs Community, the image keeps
+                                    the branch head tag, and the chart comes from
+                                    the branch head channel. This is muster
+                                    self-resolving the way the nightly matrix
+                                    should. In metadata mode --repo is ignored.
   --version <tag>                   Image tag: head or a version like 2.13 /
                                     2.13.4-rc1 (default: head).
   --dry-run                         Resolve and print the chart, image and
@@ -133,6 +142,7 @@ PROVIDER="${PROVIDER:-k3d}"
 INSTANCE="${INSTANCE:-e2e}"
 EXTERNAL="${EXTERNAL:-false}"
 RANCHER_REPO="${RANCHER_REPO:-rancher-com-alpha}"
+CHANNEL_SOURCE="${CHANNEL_SOURCE:-fixed}"
 RANCHER_IMAGE_TAG="${RANCHER_IMAGE_TAG:-head}"
 PREFER_STAGING="${PREFER_STAGING:-false}"
 DRY_RUN="${DRY_RUN:-false}"
@@ -196,6 +206,10 @@ while [ $# -gt 0 ]; do
       ;;
     --repo)
       RANCHER_REPO="${2:?--repo needs a value}"
+      shift 2
+      ;;
+    --channel-source)
+      CHANNEL_SOURCE="${2:?--channel-source needs a value}"
       shift 2
       ;;
     --prefer-staging)
@@ -308,11 +322,15 @@ case "$OUT" in
   env | cypress | json) ;;
   *) die "unknown --out: $OUT (env|cypress|json)" ;;
 esac
+case "$CHANNEL_SOURCE" in
+  fixed | metadata) ;;
+  *) die "unknown --channel-source: $CHANNEL_SOURCE (fixed|metadata)" ;;
+esac
 repo_valid "$RANCHER_REPO" \
   || die "unknown --repo: $RANCHER_REPO ($(repo_keys | tr -s ' ' '|' | sed 's/|$//'))"
 
 export INSTANCE EXTERNAL RANCHER_REPO RANCHER_IMAGE_TAG OUT RANCHER_PASSWORD
-export RANCHER_IMAGE_TAG_OVERRIDE
+export RANCHER_IMAGE_TAG_OVERRIDE CHANNEL_SOURCE
 export PREFER_STAGING DRY_RUN
 export MIRROR_REGISTRY MIRROR_ALL MIRROR_EXTENSION MIRROR_INSECURE MIRROR_K3K_TAG AIRGAP
 export MIRROR_FROM_CLUSTER MIRROR_K3S_VERSIONS
@@ -445,6 +463,7 @@ provider=$PROVIDER
 instance=$INSTANCE
 external=$EXTERNAL
 repo=$RANCHER_REPO
+channel_source=$CHANNEL_SOURCE
 version=$RANCHER_IMAGE_TAG
 out=$OUT
 dashboard_src=${DASHBOARD_SRC:-<none>}

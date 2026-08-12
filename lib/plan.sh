@@ -29,6 +29,9 @@ plan_report() {
   plan_row provider "$PROVIDER"
   plan_row instance "$INSTANCE"
   plan_row external "$EXTERNAL"
+  if [ "${CHANNEL_SOURCE:-fixed}" = metadata ]; then
+    plan_row "channel source" "metadata  (branches-metadata.json decides registry and image)"
+  fi
   plan_row channel "$RANCHER_REPO"
   plan_row "chart repo" "$RANCHER_CHART_URL"
   plan_row "chart version" "$RANCHER_CHART_VERSION"

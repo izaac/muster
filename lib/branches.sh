@@ -120,3 +120,16 @@ branches_apply_k3s_image() {
   export K3S_IMAGE
   log_info "k3s image from dashboard branches-metadata: $K3S_IMAGE"
 }
+
+# metadata_chart_url <branch> [helm_repo_url] - the head chart channel for a
+# branch. The dashboard team's helm.repo-url key wins when it is filled in;
+# otherwise the optimus per-branch channel, which publishes that branch's
+# X.Y-<sha>-head chart. Pure: the fallback is a fixed URL shape.
+metadata_chart_url() {
+  local branch="${1:?branch required}" helmurl="${2:-}"
+  if [ -n "$helmurl" ]; then
+    printf '%s' "$helmurl"
+    return 0
+  fi
+  printf 'https://charts.optimus.rancher.io/server-charts/%s' "$branch"
+}

@@ -546,10 +546,86 @@ freshness_maybe_promote() {
   fi
 }
 
+# metadata_pick_chart <repo> <search_text> - the chart version to run from a
+# per-branch head channel, on stdout. Pure. Such a channel carries only that
+# branch's head chart, so the newest by version sort is the one to run; the
+# repo-scoped grep also drops the header and any same-named chart from another
+# configured repository.
+metadata_pick_chart() {
+  local repo="${1:?repo required}" search="${2:-}"
+  printf '%s\n' "$search" \
+    | grep "^${repo}/rancher[[:space:]]" \
+    | awk '{print $2}' | sort -V | tail -1 | tr -d '[:space:]'
+}
+
+# helm_resolve_metadata - resolve the server image, chart and tag from the
+# dashboard's branches-metadata.json for the branch that RANCHER_IMAGE_TAG names.
+#
+# This is muster acting as the self-resolving matrix of qa-tasks#2410: the
+# registry key in the file decides Prime vs Community, the image keeps the
+# branch head tag rather than a chart version, and the chart comes from the
+# branch's head channel. Reading the file is deliberate over probing dates or
+# registries: which registry a line publishes to is a human decision the
+# dashboard team records there (release-2.14 has moved registries repeatedly),
+# and no freshness signal can express it.
+#
+# Exports the same four variables as helm_resolve_version so the install path is
+# identical from here on. K3s comes from the same file via branches_apply_k3s_image.
+helm_resolve_metadata() {
+  local tag="${RANCHER_IMAGE_TAG:?RANCHER_IMAGE_TAG is required}"
+  local branch meta facts img itag helmurl url repo search
+  branch="$(ui_branch_from_tag "$tag" 2>/dev/null || true)"
+  [ -n "$branch" ] || die "channel-source metadata: cannot map '$tag' to a branch"
+
+  meta="$(branches_fetch)"
+  [ -n "$meta" ] || die "channel-source metadata: branches-metadata.json is unreachable"
+  facts="$(printf '%s' "$meta" | branches_parse "$branch")"
+  img="$(printf '%s\n' "$facts" | sed -n 's/^RANCHER_IMAGE=//p' | head -1)"
+  itag="$(printf '%s\n' "$facts" | sed -n 's/^RANCHER_IMAGE_TAG=//p' | head -1)"
+  helmurl="$(printf '%s\n' "$facts" | sed -n 's/^HELM_REPO_URL=//p' | head -1)"
+  [ -n "$img" ] || die "channel-source metadata: branch '$branch' has no rancher-image in the metadata"
+  [ -n "$itag" ] || itag="$tag"
+
+  url="$(metadata_chart_url "$branch" "$helmurl")"
+  repo="muster-metadata-${branch}"
+  require_cmd helm
+  retry 3 5 "helm repo add $repo" -- helm repo add "$repo" "$url" --force-update
+  retry 3 5 "helm repo update" -- helm repo update "$repo"
+  search="$(helm search repo "${repo}/rancher" --devel --versions 2>/dev/null || true)"
+  RANCHER_CHART_VERSION="$(metadata_pick_chart "$repo" "$search")"
+  [ -n "$RANCHER_CHART_VERSION" ] || die "channel-source metadata: no rancher chart at ${url} for ${branch}"
+
+  RANCHER_REPO="$repo"
+  RANCHER_CHART_URL="$url"
+  RANCHER_IMAGE="$img"
+  RANCHER_IMAGE_TAG_RESOLVED="$itag"
+
+  # An explicit image override still wins, the same as the fixed path.
+  if [ -n "${RANCHER_IMAGE_TAG_OVERRIDE:-}" ]; then
+    local ovr="$RANCHER_IMAGE_TAG_OVERRIDE"
+    case "$ovr" in
+      */*)
+        RANCHER_IMAGE="${ovr%:*}"
+        RANCHER_IMAGE_TAG_RESOLVED="${ovr##*:}"
+        ;;
+      *) RANCHER_IMAGE_TAG_RESOLVED="$ovr" ;;
+    esac
+    log_info "image overridden: ${RANCHER_IMAGE}:${RANCHER_IMAGE_TAG_RESOLVED} (chart stays $RANCHER_CHART_VERSION)"
+  fi
+
+  export RANCHER_REPO RANCHER_CHART_URL RANCHER_IMAGE RANCHER_CHART_VERSION RANCHER_IMAGE_TAG_RESOLVED
+  log_info "resolved (metadata): branch=$branch registry=${img%%/*} image=${img}:${itag} chart=$RANCHER_CHART_VERSION"
+  helm_verify_image
+}
+
 # helm_resolve_version - orchestrate the impure resolution against a live helm.
 # Validates RANCHER_REPO, adds/updates the repo, runs the search, and exports:
 #   RANCHER_CHART_URL RANCHER_IMAGE RANCHER_CHART_VERSION RANCHER_IMAGE_TAG_RESOLVED
 helm_resolve_version() {
+  if [ "${CHANNEL_SOURCE:-fixed}" = metadata ]; then
+    helm_resolve_metadata
+    return
+  fi
   freshness_maybe_promote
   local repo="${RANCHER_REPO:?RANCHER_REPO is required}"
   local tag="${RANCHER_IMAGE_TAG:?RANCHER_IMAGE_TAG is required}"

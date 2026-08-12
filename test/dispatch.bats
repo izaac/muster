@@ -46,6 +46,12 @@ setup() {
   [[ "$output" == *"unknown --out"* ]]
 }
 
+@test "unknown --channel-source is rejected" {
+  run "$MUSTER" up --channel-source guess
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unknown --channel-source"* ]]
+}
+
 @test "docker driver loads and declares the self-contained hooks" {
   run bash -c '
     . "'"$BATS_TEST_DIRNAME"'/../lib/util.sh"
@@ -55,7 +61,6 @@ setup() {
   '
   [ "$status" -eq 0 ]
 }
-
 
 @test "up on the docker provider reaches the driver (not the old stub)" {
   # `muster up --provider docker` invokes docker for real; skip where docker is

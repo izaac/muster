@@ -12,6 +12,8 @@ _muster() {
     'wait:Run readiness gates against an existing instance'
     'tunnel:Manage the cloudflared quick tunnel'
     'warmup:Prime the provisioning controller'
+    'import:Create a second k3d cluster and import it into the management Rancher'
+    'mirror:Copy the images an airgapped install needs into a registry'
     'down:Tear down the cluster and sweep state'
     'env:Print the consumer handoff'
     'show:Print the resolved configuration'
@@ -25,8 +27,20 @@ _muster() {
     '--external[Expose Rancher via a public tunnel]' \
     '--version[Rancher image tag]:tag:' \
     '--repo[Rancher channel]:channel:(rancher-prime rancher-prime-ga rancher-latest rancher-alpha rancher-community rancher-com-rc rancher-com-alpha)' \
+    '--channel-source[Where the channel and image come from]:source:(fixed metadata)' \
     '--password[Rancher bootstrap/admin password]:password:' \
+    '--image-tag[Install this server image tag against the resolved chart]:tag:' \
     '--out[Handoff format]:format:(env cypress json)' \
+    '--registry[Target/private registry for mirror and airgap]:registry:' \
+    '--airgap[Resolve every image through --registry]' \
+    '--insecure-registry[Skip TLS verification against the registry]' \
+    '--mirror-all[Mirror the whole published image list]' \
+    '--mirror-extension[Also mirror the K3K extension images]' \
+    '--k3k-version[K3K version to mirror]:tag:' \
+    '--k3s-versions[How many newest k3s versions to mirror]:n:' \
+    '--from-cluster[For mirror: copy what the running cluster asks for]' \
+    '--import-instance[For import: the downstream k3d instance (e2e-<n>)]:instance:' \
+    '--management-instance[For down of a downstream: the management instance]:instance:' \
     '--dashboard-src[rancher/dashboard checkout]:dir:_files -/' \
     '--dashboard-dist[prebuilt UI dist]:dir:_files -/' \
     '--dashboard-branch[Force the UI branch]:branch:' \

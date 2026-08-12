@@ -8,10 +8,13 @@ _muster() {
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD - 1]}"
 
-  local commands="up build-ui wait tunnel warmup down env show version help"
-  local flags="--provider --instance --external --version --repo --password \
-    --out --dashboard-src --dashboard-dist --dashboard-branch --node-bin \
-    --kubeconfig --rancher-host --config --dry-run --prefer-staging --help"
+  local commands="up build-ui wait tunnel warmup import mirror down env show version help"
+  local flags="--provider --instance --external --version --repo --channel-source \
+    --password --image-tag --out --registry --airgap --insecure-registry \
+    --mirror-all --mirror-extension --k3k-version --k3s-versions --from-cluster \
+    --import-instance --management-instance --dashboard-src --dashboard-dist \
+    --dashboard-branch --node-bin --kubeconfig --rancher-host --config --dry-run \
+    --prefer-staging --help"
 
   case "$prev" in
     --provider)
@@ -22,6 +25,10 @@ _muster() {
       mapfile -t COMPREPLY < <(compgen -W "rancher-prime rancher-prime-ga rancher-latest rancher-alpha rancher-community rancher-com-rc rancher-com-alpha" -- "$cur")
       return
       ;;
+    --channel-source)
+      mapfile -t COMPREPLY < <(compgen -W "fixed metadata" -- "$cur")
+      return
+      ;;
     --out)
       mapfile -t COMPREPLY < <(compgen -W "env cypress json" -- "$cur")
       return
@@ -30,7 +37,7 @@ _muster() {
       mapfile -t COMPREPLY < <(compgen -f -- "$cur")
       return
       ;;
-    --instance | --version | --password | --dashboard-branch | --rancher-host)
+    --instance | --version | --password | --image-tag | --registry | --k3k-version | --k3s-versions | --import-instance | --management-instance | --dashboard-branch | --rancher-host)
       return
       ;;
   esac
@@ -44,7 +51,7 @@ _muster() {
   local i cmd_seen=""
   for ((i = 1; i < COMP_CWORD; i++)); do
     case "${COMP_WORDS[i]}" in
-      up | build-ui | wait | tunnel | warmup | down | env | show | version | help)
+      up | build-ui | wait | tunnel | warmup | import | mirror | down | env | show | version | help)
         cmd_seen=1
         break
         ;;

@@ -41,6 +41,11 @@ MUSTER_MIRROR_CORE_FAMILIES="${MUSTER_MIRROR_SERVER_FAMILIES} ${MUSTER_MIRROR_K3
 # image list, because it is not part of Rancher.
 MUSTER_MIRROR_EXTENSION_IMAGES="rancher/k3k rancher/k3k-kubelet"
 
+# The cert-manager Helm chart as an OCI artifact. An airgapped install pulls the
+# chart and its CRDs from the mirror instead of charts.jetstack.io and a GitHub
+# release asset. OCI chart tags are the bare semver, with no leading "v".
+MUSTER_MIRROR_CERT_MANAGER_CHART="quay.io/jetstack/charts/cert-manager"
+
 # mirror_list_candidates <chart_version> - image-list URLs to try, best first.
 #
 # A pre-release has no list of its own, so fall back to the release it is built
@@ -151,8 +156,19 @@ mirror_plan() {
 
   {
     printf '%s:%s\n' "${RANCHER_IMAGE:-rancher/rancher}" "$RANCHER_IMAGE_TAG_RESOLVED"
+    # The agent shares the server's registry and must match the server's resolved
+    # tag. A prerelease server (e.g. v2.14.4-rc1) needs the matching agent, but
+    # the release image list names rancher-agent only at its GA tag, so the
+    # prerelease agent would be missing. An imported downstream pulls exactly this
+    # reference for cattle-cluster-agent, so mirror it from the resolved tag too.
+    local server_img="${RANCHER_IMAGE:-rancher/rancher}"
+    printf '%s/rancher-agent:%s\n' "${server_img%/*}" "$RANCHER_IMAGE_TAG_RESOLVED"
     printf '%s\n' "$core"
-    mirror_cert_manager_images "${CERT_MANAGER_VERSION:-$CERT_MANAGER_VERSION_DEFAULT}"
+    local cmver="${CERT_MANAGER_VERSION:-$CERT_MANAGER_VERSION_DEFAULT}"
+    mirror_cert_manager_images "$cmver"
+    # The cert-manager chart itself, so an airgapped install gets the chart and
+    # its CRDs from the mirror. The tag is the bare semver (chart OCI convention).
+    printf '%s:%s\n' "$MUSTER_MIRROR_CERT_MANAGER_CHART" "${cmver#v}"
     if is_true "${MIRROR_EXTENSION:-}"; then
       local img tag
       tag="$(mirror_k3k_tag)"

@@ -244,58 +244,160 @@ setup() {
   [ "$out" = "0|2.14.2-rc1|2026-05-27T10:00:00Z" ]
 }
 
-@test "newest_dated filters by prerelease and returns the newest version|date" {
+@test "newest_release_version returns the highest release for a line" {
   out="$(printf '%s\n' "$INDEX_ALPHA" | index_rancher_dates \
-    | newest_dated '' '-alpha')"
-  [ "$out" = "2.16.0-alpha1|2026-06-28" ]
-}
-
-@test "newest_dated honours a minor version regex" {
-  out="$(printf '%s\n' "$INDEX_ALPHA" | index_rancher_dates \
-    | newest_dated '2[.]14([.]|-)' '-alpha')"
+    | newest_release_version '2[.]14([.]|-)')"
   [ "$out" = "2.14.3-alpha6|2026-06-26" ]
 }
 
-@test "parse_dockerhub_date pulls the date out of last_updated" {
-  [ "$(parse_dockerhub_date '{"name":"head","last_updated":"2026-06-29T12:00:00.123Z"}')" = "2026-06-29" ]
-  [ -z "$(parse_dockerhub_date '{}')" ]
+@test "newest_release_version excludes -head dev charts and ranks rc above alpha" {
+  out="$(printf '%s\n' \
+    '  rancher:' \
+    '  - apiVersion: v2' \
+    '    version: 2.14.5-abcdef-head' \
+    '    created: 2026-08-11T10:00:00Z' \
+    '  - apiVersion: v2' \
+    '    version: 2.14.4-rc1' \
+    '    created: 2026-07-30T10:00:00Z' \
+    '  - apiVersion: v2' \
+    '    version: 2.14.4-alpha7' \
+    '    created: 2026-07-29T10:00:00Z' \
+    | index_rancher_dates | newest_release_version '2[.]14([.]|-)')"
+  [ "$out" = "2.14.4-rc1|2026-07-30" ]
 }
 
-# --- freshness_maybe_promote: precedence and date logic ----------------------
-# These stub the two impure fetchers so the decision logic is exercised with no
-# network. The stubs shadow the real functions after lib/helm.sh is sourced.
+@test "version_ahead orders patches, and rc above alpha, and GA above its rc" {
+  version_ahead 2.14.4 2.14.3
+  version_ahead 2.14.4-rc1 2.14.4-alpha7
+  version_ahead 2.14.4 2.14.4-rc1
+  version_ahead 2.14.4-rc1 2.14.3
+  run version_ahead 2.15.0-rc5 2.15.0-rc5
+  [ "$status" -ne 0 ]
+  version_ahead 2.14.4-rc1 ""
+}
 
-@test "promotes head to the newest staging channel when staging is newer" {
-  fetch_dockerhub_date() { echo "2026-06-20"; }
+@test "date_within_days measures recency and treats the future as within" {
+  date_within_days 2026-07-30 2026-08-12 60
+  run date_within_days 2026-05-01 2026-08-12 60
+  [ "$status" -ne 0 ]
+  date_within_days 2099-01-01 2026-08-12 60
+}
+
+@test "freshness_prefer_prime prefers prime unless community is strictly ahead" {
+  freshness_prefer_prime 2.14.4-rc1 2.14.3 2026-07-30 2026-08-12 60
+  freshness_prefer_prime 2.15.1-alpha1 2.15.1-alpha1 2026-08-05 2026-08-12 60
+  run freshness_prefer_prime 2.14.4-rc1 2.14.3 2026-05-01 2026-08-12 60
+  [ "$status" -ne 0 ]
+  run freshness_prefer_prime 2.14.4-rc1 2.14.4 2026-08-11 2026-08-12 60
+  [ "$status" -ne 0 ]
+  freshness_prefer_prime 2.14.4-rc1 "" 2026-08-01 2026-08-12 60
+}
+
+# --- freshness_maybe_promote: the G4 cutoff (patch-ahead, not head date) ------
+# These stub fetch_index_dates per channel so the decision runs with no network.
+# MUSTER_TODAY pins "now" so the recency gate is deterministic.
+
+@test "promotes to prime when the prime release is ahead of the community line and recent" {
   fetch_index_dates() {
     case "$1" in
-      rancher-latest) printf '%s\n' '0|2.14.2-rc1|2026-05-27T00:00:00Z' ;;
-      rancher-alpha) printf '%s\n' '0|2.14.3-alpha6|2026-06-26T00:00:00Z' ;;
+      rancher-com-rc | rancher-com-alpha) printf '%s\n' '1|2.14.3|2026-06-29T00:00:00Z' ;;
+      rancher-latest) printf '%s\n' '0|2.14.4-rc1|2026-07-30T00:00:00Z' ;;
+      rancher-alpha) printf '%s\n' '0|2.14.4-alpha7|2026-07-29T00:00:00Z' ;;
     esac
   }
-  PREFER_STAGING=1 RANCHER_REPO=rancher-com-alpha RANCHER_IMAGE_TAG=head
+  MUSTER_TODAY=2026-08-12
+  PREFER_STAGING=1 RANCHER_REPO=rancher-com-rc RANCHER_IMAGE_TAG=v2.14-head
   freshness_maybe_promote
-  [ "$RANCHER_REPO" = "rancher-alpha" ]
-  [ "$RANCHER_IMAGE_TAG" = "v2.14.3-alpha6" ]
+  [ "$RANCHER_REPO" = "rancher-latest" ]
+  [ "$RANCHER_IMAGE_TAG" = "v2.14.4-rc1" ]
 }
 
-@test "keeps community when head is still the newest" {
-  fetch_dockerhub_date() { echo "2026-06-29"; }
+@test "promotes on a tie because the prime build is the superset" {
   fetch_index_dates() {
     case "$1" in
-      rancher-latest) printf '%s\n' '0|2.14.2-rc1|2026-05-27T00:00:00Z' ;;
-      rancher-alpha) printf '%s\n' '0|2.14.3-alpha6|2026-06-26T00:00:00Z' ;;
+      rancher-com-rc | rancher-com-alpha) printf '%s\n' '0|2.15.1-alpha1|2026-08-05T00:00:00Z' ;;
+      rancher-latest) printf '%s\n' '0|2.15.1-alpha1|2026-08-05T00:00:00Z' ;;
+      rancher-alpha) printf '%s\n' '' ;;
     esac
   }
+  MUSTER_TODAY=2026-08-12
+  PREFER_STAGING=1 RANCHER_REPO=rancher-com-rc RANCHER_IMAGE_TAG=v2.15-head
+  freshness_maybe_promote
+  [ "$RANCHER_REPO" = "rancher-latest" ]
+  [ "$RANCHER_IMAGE_TAG" = "v2.15.1-alpha1" ]
+}
+
+@test "keeps community when the community line has GA'd past staging" {
+  fetch_index_dates() {
+    case "$1" in
+      rancher-com-rc | rancher-com-alpha) printf '%s\n' '1|2.14.4|2026-08-10T00:00:00Z' ;;
+      rancher-latest) printf '%s\n' '0|2.14.4-rc1|2026-07-30T00:00:00Z' ;;
+      rancher-alpha) printf '%s\n' '' ;;
+    esac
+  }
+  MUSTER_TODAY=2026-08-12
+  PREFER_STAGING=1 RANCHER_REPO=rancher-com-rc RANCHER_IMAGE_TAG=v2.14-head
+  freshness_maybe_promote
+  [ "$RANCHER_REPO" = "rancher-com-rc" ]
+  [ "$RANCHER_IMAGE_TAG" = "v2.14-head" ]
+}
+
+@test "keeps community when the prime line is ahead but stale (older than 60 days)" {
+  fetch_index_dates() {
+    case "$1" in
+      rancher-com-rc | rancher-com-alpha) printf '%s\n' '1|2.13.3|2026-04-01T00:00:00Z' ;;
+      rancher-latest) printf '%s\n' '0|2.13.8-rc1|2026-05-01T00:00:00Z' ;;
+      rancher-alpha) printf '%s\n' '' ;;
+    esac
+  }
+  MUSTER_TODAY=2026-08-12
+  PREFER_STAGING=1 RANCHER_REPO=rancher-com-rc RANCHER_IMAGE_TAG=v2.13-head
+  freshness_maybe_promote
+  [ "$RANCHER_REPO" = "rancher-com-rc" ]
+  [ "$RANCHER_IMAGE_TAG" = "v2.13-head" ]
+}
+
+@test "the newest prime chart ignores a -head dev chart in the index" {
+  fetch_index_dates() {
+    case "$1" in
+      rancher-com-rc | rancher-com-alpha) printf '%s\n' '1|2.14.3|2026-06-29T00:00:00Z' ;;
+      rancher-latest) printf '%s\n' \
+        '0|2.14.5-abc-head|2026-08-11T00:00:00Z' \
+        '0|2.14.4-rc1|2026-07-30T00:00:00Z' ;;
+      rancher-alpha) printf '%s\n' '' ;;
+    esac
+  }
+  MUSTER_TODAY=2026-08-12
+  PREFER_STAGING=1 RANCHER_REPO=rancher-com-rc RANCHER_IMAGE_TAG=v2.14-head
+  freshness_maybe_promote
+  [ "$RANCHER_IMAGE_TAG" = "v2.14.4-rc1" ]
+}
+
+@test "keeps community when the line has no prime release at all" {
+  fetch_index_dates() {
+    case "$1" in
+      rancher-com-rc | rancher-com-alpha) printf '%s\n' '0|2.15.0-rc5|2026-08-10T00:00:00Z' ;;
+      *) printf '%s\n' '' ;;
+    esac
+  }
+  MUSTER_TODAY=2026-08-12
+  PREFER_STAGING=1 RANCHER_REPO=rancher-com-rc RANCHER_IMAGE_TAG=v2.15-head
+  freshness_maybe_promote
+  [ "$RANCHER_REPO" = "rancher-com-rc" ]
+  [ "$RANCHER_IMAGE_TAG" = "v2.15-head" ]
+}
+
+@test "master head has no release line to weigh and is left alone" {
+  fetch_index_dates() { printf '%s\n' '0|9.9.9-rc1|2099-01-01T00:00:00Z'; }
+  MUSTER_TODAY=2026-08-12
   PREFER_STAGING=1 RANCHER_REPO=rancher-com-alpha RANCHER_IMAGE_TAG=head
   freshness_maybe_promote
   [ "$RANCHER_REPO" = "rancher-com-alpha" ]
   [ "$RANCHER_IMAGE_TAG" = "head" ]
 }
 
-@test "an explicit concrete version pin is never promoted (override wins)" {
-  fetch_dockerhub_date() { echo "2000-01-01"; }
-  fetch_index_dates() { printf '%s\n' '0|9.9.9-alpha1|2099-01-01T00:00:00Z'; }
+@test "a concrete version pin is never promoted" {
+  fetch_index_dates() { printf '%s\n' '0|9.9.9-rc1|2099-01-01T00:00:00Z'; }
   PREFER_STAGING=1 RANCHER_REPO=rancher-com-alpha RANCHER_IMAGE_TAG=2.14.2
   freshness_maybe_promote
   [ "$RANCHER_REPO" = "rancher-com-alpha" ]
@@ -303,56 +405,27 @@ setup() {
 }
 
 @test "the flag off leaves the backend untouched" {
-  fetch_dockerhub_date() { echo "2000-01-01"; }
-  fetch_index_dates() { printf '%s\n' '0|9.9.9-alpha1|2099-01-01T00:00:00Z'; }
-  PREFER_STAGING=false RANCHER_REPO=rancher-com-alpha RANCHER_IMAGE_TAG=head
+  fetch_index_dates() { printf '%s\n' '0|9.9.9-rc1|2099-01-01T00:00:00Z'; }
+  PREFER_STAGING=false RANCHER_REPO=rancher-com-alpha RANCHER_IMAGE_TAG=v2.14-head
   freshness_maybe_promote
   [ "$RANCHER_REPO" = "rancher-com-alpha" ]
-  [ "$RANCHER_IMAGE_TAG" = "head" ]
-}
-
-@test "a vX.Y-head tag restricts the staging race to that minor" {
-  fetch_dockerhub_date() { echo "2026-06-20"; }
-  fetch_index_dates() {
-    case "$1" in
-      rancher-latest) printf '%s\n' '0|2.14.2-rc1|2026-05-27T00:00:00Z' ;;
-      rancher-alpha) printf '%s\n' \
-        '0|2.16.0-alpha1|2026-06-28T00:00:00Z' \
-        '0|2.14.3-alpha6|2026-06-26T00:00:00Z' ;;
-    esac
-  }
-  PREFER_STAGING=1 RANCHER_REPO=rancher-com-rc RANCHER_IMAGE_TAG=v2.14-head
-  freshness_maybe_promote
-  [ "$RANCHER_REPO" = "rancher-alpha" ]
-  [ "$RANCHER_IMAGE_TAG" = "v2.14.3-alpha6" ]
-}
-@test "a same-day staging build is a tie and keeps community" {
-  fetch_dockerhub_date() { echo "2026-06-26"; }
-  fetch_index_dates() {
-    case "$1" in
-      rancher-latest) printf '%s\n' '0|2.14.2-rc1|2026-05-27T00:00:00Z' ;;
-      rancher-alpha) printf '%s\n' '0|2.14.3-alpha6|2026-06-26T09:30:00Z' ;;
-    esac
-  }
-  PREFER_STAGING=1 RANCHER_REPO=rancher-com-alpha RANCHER_IMAGE_TAG=head
-  freshness_maybe_promote
-  [ "$RANCHER_REPO" = "rancher-com-alpha" ]
-  [ "$RANCHER_IMAGE_TAG" = "head" ]
+  [ "$RANCHER_IMAGE_TAG" = "v2.14-head" ]
 }
 
 @test "promotion announces PROMOTE in the log" {
-  fetch_dockerhub_date() { echo "2026-06-20"; }
   fetch_index_dates() {
     case "$1" in
-      rancher-latest) printf '%s\n' '0|2.14.2-rc1|2026-05-27T00:00:00Z' ;;
-      rancher-alpha) printf '%s\n' '0|2.14.3-alpha6|2026-06-26T00:00:00Z' ;;
+      rancher-com-rc | rancher-com-alpha) printf '%s\n' '1|2.14.3|2026-06-29T00:00:00Z' ;;
+      rancher-latest) printf '%s\n' '0|2.14.4-rc1|2026-07-30T00:00:00Z' ;;
+      rancher-alpha) printf '%s\n' '' ;;
     esac
   }
-  PREFER_STAGING=1 RANCHER_REPO=rancher-com-alpha RANCHER_IMAGE_TAG=head
+  MUSTER_TODAY=2026-08-12
+  PREFER_STAGING=1 RANCHER_REPO=rancher-com-rc RANCHER_IMAGE_TAG=v2.14-head
   run freshness_maybe_promote
   [ "$status" -eq 0 ]
-  [[ "$output" == *"PROMOTE community -> rancher-alpha"* ]]
-  [[ "$output" == *"2.14.3-alpha6"* ]]
+  [[ "$output" == *"PROMOTE community -> rancher-latest"* ]]
+  [[ "$output" == *"2.14.4-rc1"* ]]
 }
 
 # --- image_tag_normalize -----------------------------------------------------

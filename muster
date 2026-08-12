@@ -98,12 +98,18 @@ Flags:
                                     whose Rancher registered it (default: e2e).
                                     `down` deregisters the imported cluster
                                     before deleting it.
-  --prefer-staging                  Keep-fresh: when the tag is a rolling head
-                                    tag (head / vX.Y-head) and the newest SUSE
-                                    staging build (rancher-latest/-alpha) is
-                                    newer by date, auto-promote the backend to
-                                    it. A concrete --version pin always wins.
-                                    Also honoured via PREFER_STAGING env.
+  --prefer-staging                  Keep-fresh cutoff: for a rolling head tag
+                                    (head / vX.Y-head), unless the Community line
+                                    is strictly ahead of the Prime one (it GA'd
+                                    past staging), promote to the line's newest
+                                    Prime release (rancher-latest/-alpha) when it
+                                    is recent (MUSTER_PRIME_MAX_AGE_DAYS, default
+                                    60). A tie prefers Prime, since that build
+                                    also loads the Prime-only extensions. The head
+                                    image's own build date is ignored: it keeps
+                                    rebuilding after the line stops. A concrete
+                                    --version pin always wins. Also honoured via
+                                    PREFER_STAGING env.
   --password <secret>               Rancher bootstrap/admin password (default:
                                     RANCHER_PASSWORD env, else password1234).
   --image-tag <tag>                 Install this server image tag against the

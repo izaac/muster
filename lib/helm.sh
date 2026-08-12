@@ -447,26 +447,70 @@ index_rancher_dates() {
   '
 }
 
-# newest_dated <version_regex> <prerelease_filter> - read "stab|version|created"
-# rows on stdin, keep those whose version matches <version_regex> (empty = any)
-# and contains <prerelease_filter> (empty = any), and print "version|YYYY-MM-DD"
-# of the newest (sort -V on stab then version). Pure.
-newest_dated() {
-  local vre="$1" filter="$2" rows
-  rows="$(cat)"
-  [ -n "$vre" ] && rows="$(printf '%s\n' "$rows" | grep -E "^[01][|]${vre}" || true)"
-  [ -n "$filter" ] && rows="$(printf '%s\n' "$rows" | grep -- "$filter" || true)"
+# newest_release_version <version_regex> - read "stab|version|created" rows on
+# stdin and print "version|YYYY-MM-DD" of the highest RELEASE version matching
+# the regex, excluding -head dev charts (a -head chart is the branch head, not a
+# release). "Highest" is semver-correct: a final release outranks its own
+# pre-releases and an rc outranks an alpha, via the "-"->"~" rewrite that a plain
+# sort -V needs to order pre-releases; the stab-first ordering of the raw rows
+# would wrongly rank a lower GA above a higher rc. Pure.
+newest_release_version() {
+  local vre="$1" rows
+  rows="$(grep -E "^[01][|]${vre}" | grep -v -- '-head' || true)"
   [ -n "$rows" ] || return 0
-  printf '%s\n' "$rows" | sort -V -t'|' -k1,1 -k2,2 | tail -1 \
-    | awk -F'|' '{ d=$3; sub(/T.*/, "", d); print $2 "|" d }'
+  printf '%s\n' "$rows" \
+    | awk -F'|' '{ k=$2; gsub(/-/, "~", k); print k "\t" $2 "\t" $3 }' \
+    | sort -V -k1,1 | tail -1 \
+    | awk -F'\t' '{ d=$3; sub(/T.*/, "", d); print $2 "|" d }'
 }
 
-# parse_dockerhub_date <json_text> - extract the last_updated date (YYYY-MM-DD)
-# from a Docker Hub tag API response. Pure.
-parse_dockerhub_date() {
-  printf '%s' "$1" | grep -oE '"last_updated":"[^"]+"' | head -1 \
-    | sed -E 's/.*:"([^T]+)T.*/\1/'
+# version_ahead <a> <b> - true when version a is strictly newer than b. Uses
+# sort -V, but first rewrites the pre-release separator "-" to "~" so a final
+# release outranks its own pre-releases (2.14.4 is newer than 2.14.4-rc1) and an
+# rc outranks an alpha, which sort -V does not do on its own. An empty b counts
+# as older than anything. Pure.
+version_ahead() {
+  local a="$1" b="$2"
+  [ "$a" = "$b" ] && return 1
+  local ka kb newest
+  ka="$(printf '%s' "$a" | sed 's/-/~/')"
+  kb="$(printf '%s' "$b" | sed 's/-/~/')"
+  newest="$(printf '%s\n%s\n' "$ka" "$kb" | sort -V | tail -1)"
+  [ "$newest" = "$ka" ]
 }
+
+# _date_epoch <YYYY-MM-DD> - seconds since epoch, GNU date first then BSD.
+_date_epoch() {
+  date -d "$1" +%s 2>/dev/null || date -j -f '%Y-%m-%d' "$1" +%s 2>/dev/null
+}
+
+# date_within_days <date> <today> <max_days> - true when <date> is no more than
+# <max_days> before <today>; a future date is always within. Deterministic given
+# its arguments.
+date_within_days() {
+  local d="$1" today="$2" max="$3" de te
+  de="$(_date_epoch "$d")" || return 1
+  te="$(_date_epoch "$today")" || return 1
+  [ -n "$de" ] && [ -n "$te" ] || return 1
+  [ "$(((te - de) / 86400))" -le "$max" ]
+}
+
+# freshness_prefer_prime <prime_ver> <community_ver> <prime_date> <today> <max>
+# - the G4 cutoff, pure. Prefer the prime line unless the community line is
+# strictly ahead of it (community has GA'd past staging), and only when the prime
+# release is recent enough that the prime line is itself still alive. A tie
+# prefers prime, because the same version built on the prime registry is a
+# superset of the community one: it loads the Prime-only extensions the community
+# build cannot. A community that never published the line counts as behind.
+freshness_prefer_prime() {
+  local prime_ver="$1" com_ver="$2" prime_date="$3" today="$4" max="$5"
+  [ -n "$prime_ver" ] || return 1
+  version_ahead "$com_ver" "$prime_ver" && return 1
+  date_within_days "$prime_date" "$today" "$max"
+}
+
+# today - current date (YYYY-MM-DD), overridable in tests with MUSTER_TODAY.
+today() { printf '%s' "${MUSTER_TODAY:-$(date +%F)}"; }
 
 # _freshness_curl <url> - GET a URL with the system CA bundle, quiet on failure.
 _freshness_curl() {
@@ -482,15 +526,41 @@ fetch_index_dates() {
   _freshness_curl "$(repo_url "$1")/index.yaml" | index_rancher_dates
 }
 
-# fetch_dockerhub_date <tag> - resolve a Docker Hub rancher/rancher tag date.
-fetch_dockerhub_date() {
-  parse_dockerhub_date \
-    "$(_freshness_curl "https://hub.docker.com/v2/repositories/rancher/rancher/tags/$1")"
+# freshness_newest_release <version_regex> <channel...> - the newest RELEASE
+# chart for a line across the given channels (an rc, alpha or GA, but never a
+# -head dev chart, which is the branch head and not a release), as
+# "version|YYYY-MM-DD|channel" on stdout. Impure: reads each channel index.
+freshness_newest_release() {
+  local vre="$1"
+  shift
+  local ch pick best_ver="" best="" ver date
+  for ch in "$@"; do
+    pick="$(fetch_index_dates "$ch" 2>/dev/null | newest_release_version "$vre" || true)"
+    [ -n "$pick" ] || continue
+    ver="${pick%%|*}"
+    date="${pick#*|}"
+    if [ -z "$best_ver" ] || version_ahead "$ver" "$best_ver"; then
+      best_ver="$ver"
+      best="${ver}|${date}|${ch}"
+    fi
+  done
+  printf '%s' "$best"
 }
 
-# freshness_maybe_promote - the gated promotion. No-op unless PREFER_STAGING is
-# truthy and the tag is a rolling head tag. Rewrites RANCHER_REPO and
-# RANCHER_IMAGE_TAG in place when the newest staging build outdates head.
+# freshness_maybe_promote - the gated promotion (--prefer-staging). No-op unless
+# PREFER_STAGING is truthy and the tag is a rolling head tag. Rewrites
+# RANCHER_REPO and RANCHER_IMAGE_TAG in place when the prime line has overtaken
+# the community one.
+#
+# The signal is the G4 cutoff, not the head image's build date. A -head image
+# keeps rebuilding on both registries long after a line's community release
+# channel has stopped, so its date proves nothing (2.14's Docker Hub head was
+# built this week while its community releases stopped at 2.14.3). Compare the
+# newest community release chart for the line against the newest prime one
+# instead: unless the community line is strictly ahead (it GA'd past staging),
+# prefer the prime release when it is recent. A tie prefers prime, since the same
+# version on the prime registry additionally loads the Prime-only extensions.
+MUSTER_PRIME_MAX_AGE_DAYS="${MUSTER_PRIME_MAX_AGE_DAYS:-60}"
 freshness_maybe_promote() {
   is_true "${PREFER_STAGING:-}" || return 0
   case "$RANCHER_IMAGE_TAG" in
@@ -501,48 +571,32 @@ freshness_maybe_promote() {
   local minor vre
   minor="$(version_string "$RANCHER_IMAGE_TAG")"
   if [ "$minor" = head ]; then
-    vre=""
-  else
-    vre="$(printf '%s' "$minor" | sed 's/\./[.]/g')([.]|-)"
+    log_info "keep-fresh: master head has no release line to weigh; keeping community"
+    return 0
   fi
+  vre="$(printf '%s' "$minor" | sed 's/\./[.]/g')([.]|-)"
 
-  local head_date
-  head_date="$(fetch_dockerhub_date "$RANCHER_IMAGE_TAG")"
-  if [ -z "$head_date" ]; then
-    log_warn "keep-fresh: no Docker Hub date for '$RANCHER_IMAGE_TAG'; keeping community"
+  local com prime com_ver prime_ver prime_date prime_ch rest
+  com="$(freshness_newest_release "$vre" rancher-com-rc rancher-com-alpha)"
+  prime="$(freshness_newest_release "$vre" rancher-latest rancher-alpha)"
+  com_ver="${com%%|*}"
+  prime_ver="${prime%%|*}"
+  rest="${prime#*|}"
+  prime_date="${rest%%|*}"
+  prime_ch="${rest##*|}"
+
+  if [ -z "$prime_ver" ]; then
+    log_info "keep-fresh: no prime release for ${minor}; keeping community ${RANCHER_IMAGE_TAG}"
     return 0
   fi
 
-  local best_ch="" best_ver="" best_date="" ch rows pick ver date filter
-  for ch in rancher-latest rancher-alpha; do
-    case "$ch" in
-      rancher-latest) filter="-rc" ;;
-      rancher-alpha) filter="-alpha" ;;
-    esac
-    rows="$(fetch_index_dates "$ch" || true)"
-    [ -n "$rows" ] || continue
-    pick="$(printf '%s\n' "$rows" | newest_dated "$vre" "$filter")"
-    [ -n "$pick" ] || continue
-    ver="${pick%%|*}"
-    date="${pick#*|}"
-    if [ -z "$best_date" ] || [ "$date" \> "$best_date" ]; then
-      best_ch="$ch"
-      best_ver="$ver"
-      best_date="$date"
-    fi
-  done
-
-  # head_date is a bare YYYY-MM-DD (Docker Hub last_updated, truncated at T);
-  # the chart created field is a full ISO timestamp. Compare on the date part
-  # only so a same-day staging build is a tie (kept community), not a win.
-  local best_day="${best_date%%T*}"
-  if [ -n "$best_date" ] && [ "$best_day" \> "$head_date" ]; then
-    log_info "keep-fresh: PROMOTE community -> ${best_ch} (${best_ver}, ${best_date} newer than ${RANCHER_IMAGE_TAG} ${head_date})"
-    RANCHER_REPO="$best_ch"
-    RANCHER_IMAGE_TAG="v${best_ver}"
+  if freshness_prefer_prime "$prime_ver" "$com_ver" "$prime_date" "$(today)" "$MUSTER_PRIME_MAX_AGE_DAYS"; then
+    log_info "keep-fresh: PROMOTE community -> ${prime_ch} (${prime_ver}; prime at or ahead of community ${com_ver:-none}, built ${prime_date})"
+    RANCHER_REPO="$prime_ch"
+    RANCHER_IMAGE_TAG="v${prime_ver}"
     export RANCHER_REPO RANCHER_IMAGE_TAG
   else
-    log_info "keep-fresh: community ${RANCHER_IMAGE_TAG} (${head_date}) still newest (staging best ${best_date:-none}); no change"
+    log_info "keep-fresh: community ${minor} is ahead of prime (community ${com_ver:-none} vs prime ${prime_ver} ${prime_date}); no change"
   fi
 }
 

@@ -164,6 +164,37 @@ Which build each row resolves to still follows the file: on a day when the 2.13
 flips, muster follows with no change here. Read the flavour off the result with
 `--dry-run`, the same as any other run.
 
+#### CI usage: the head rows and the Prime rows
+
+Two reproducible resolution inputs, one per row kind. Add `--dry-run` to resolve
+and print only; drop it to deploy.
+
+The nightly **head** rows read the file, so the same call resolves the same way
+until the file changes:
+
+```sh
+muster up --dry-run --channel-source metadata --version head
+muster up --dry-run --channel-source metadata --version v2.15-head
+muster up --dry-run --channel-source metadata --version v2.14-head
+muster up --dry-run --channel-source metadata --version v2.13-head
+```
+
+The **Prime** rows name the channel explicitly and take the newest release of the
+line (a bare minor). rc (`rancher-latest`) is preferred; a line with no rc yet
+uses alpha (`rancher-alpha`):
+
+```sh
+muster up --dry-run --repo rancher-latest --version 2.14   # newest rc:    v2.14.4-rc1
+muster up --dry-run --repo rancher-latest --version 2.13   # newest rc:    v2.13.8-rc1
+muster up --dry-run --repo rancher-alpha  --version 2.15   # newest alpha: v2.15.1-alpha1
+```
+
+A `metadata:` head row deploys from whichever registry the key names, but a
+`-head` build is community-type even on the Prime registry; only the rc/alpha
+Prime rows report `RancherPrime`. `--prefer-staging` is a date/patch probe for
+ad-hoc use and is deliberately **not** a CI input, because it is not reproducible
+day to day.
+
 ## Checking a version before running it
 
 `--dry-run` answers "which build is this, and is it Prime" without creating

@@ -162,3 +162,48 @@ PY
   [[ "$output" == *"rootful socket"* ]]
   rm -rf "$d"
 }
+
+@test "retry runs MUSTER_RETRY_HOOK between attempts" {
+  HOOK_LOG="$BATS_TEST_TMPDIR/hook"
+  : >"$HOOK_LOG"
+  hook_fn() { printf 'x' >>"$HOOK_LOG"; }
+  MUSTER_RETRY_HOOK=hook_fn
+  succeed_on_third() {
+    printf 'a' >>"$BATS_TEST_TMPDIR/tries"
+    [ "$(wc -c <"$BATS_TEST_TMPDIR/tries")" -ge 3 ]
+  }
+  : >"$BATS_TEST_TMPDIR/tries"
+  run retry 5 0 "third time" -- succeed_on_third
+  [ "$status" -eq 0 ]
+  # Two failures before the success, so the hook ran twice.
+  [ "$(wc -c <"$HOOK_LOG")" -eq 2 ]
+}
+
+@test "retry ignores a hook that fails" {
+  hook_fn() { return 1; }
+  MUSTER_RETRY_HOOK=hook_fn
+  : >"$BATS_TEST_TMPDIR/tries2"
+  succeed_on_second() {
+    printf 'a' >>"$BATS_TEST_TMPDIR/tries2"
+    [ "$(wc -c <"$BATS_TEST_TMPDIR/tries2")" -ge 2 ]
+  }
+  run retry 5 0 "second time" -- succeed_on_second
+  [ "$status" -eq 0 ]
+}
+
+@test "retry works with no hook set" {
+  unset MUSTER_RETRY_HOOK
+  run retry 2 0 "always" -- true
+  [ "$status" -eq 0 ]
+}
+
+@test "retry does not call a hook naming a function that does not exist" {
+  MUSTER_RETRY_HOOK=not_a_real_function
+  : >"$BATS_TEST_TMPDIR/tries3"
+  succeed_on_second() {
+    printf 'a' >>"$BATS_TEST_TMPDIR/tries3"
+    [ "$(wc -c <"$BATS_TEST_TMPDIR/tries3")" -ge 2 ]
+  }
+  run retry 5 0 "second time" -- succeed_on_second
+  [ "$status" -eq 0 ]
+}

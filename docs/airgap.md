@@ -69,6 +69,79 @@ docker exec k3d-e2e-server-0 wget -T5 -qO- https://1.1.1.1        # fails
 docker exec k3d-e2e-server-0 wget -T5 -qO- http://muster-registry-e2e:5000/v2/   # 200
 ```
 
+## Where the image list comes from
+
+`mirror` assembles what it copies from four sources, because no single one is
+complete:
+
+| Source | Covers | Why it is not enough on its own |
+|---|---|---|
+| The release's `rancher-images.txt` | Rancher's own components | Belongs to a release, so it is wrong about a prerelease |
+| The resolved server tag | `rancher/rancher` and `rancher-agent` | The list names the agent only at its GA tag |
+| The k3s release's `k3s-images.txt` | CoreDNS, traefik, metrics-server, local-path-provisioner, klipper, pause | These are k3s's, not Rancher's, and the node runs its own k3s version |
+| The cert-manager chart, rendered | cert-manager and its CRDs | Rancher requires it but does not ship it |
+
+The Rancher list is looked up as `prime.ribs.rancher.io` first and the GitHub
+release second, falling back from the exact version to the line's `.0` release,
+because a prerelease publishes no list of its own.
+
+The k3s entry is the one that is easy to miss. A Rancher release list does name
+CoreDNS and traefik, but at the tags Rancher's own bundled k3s uses, which is not
+the version the node is running. Taking them from the k3s release instead gives
+the exact tags the node will ask for:
+
+```
+https://github.com/k3s-io/k3s/releases/download/v1.33.1%2Bk3s1/k3s-images.txt
+```
+
+By default only the core families are kept: enough for a server that serves its
+UI and can provision a k3s downstream. RKE2, the cloud operators, Harvester,
+monitoring, NeuVector and the CAPI providers are left out; `--mirror-all` keeps
+everything the release ships.
+
+### Prereleases repair themselves
+
+A prerelease chart pulls prerelease components, and no static list can name them.
+A 2.15.1-alpha1 server wants `rancher-webhook:v0.11.1-rc.1` and
+`fleet:v0.16.1-beta.1` where the 2.15.0 list names the released versions, and
+those versions are not in the chart either: they come from the chart catalog
+bundled inside the server image and are chosen when it starts. Rendering the
+chart only yields `rancher/rancher` and `rancher/shell`.
+
+The only thing that knows is the running cluster, and it says so plainly, by
+failing to pull an image it names. So in airgap the readiness gates repair what
+they are waiting for: between attempts they read the failing pulls, copy those
+images into the mirror, and restart the stuck pods. An alpha comes up in one
+pass, and the log says what it had to fetch:
+
+```
+[muster] waiting: rancher-webhook pod ready
+[muster] airgap: mirrored missing rancher/fleet:v0.16.1-beta.1
+[muster] airgap: mirrored missing rancher/rancher-webhook:v0.11.1-rc.1
+[muster] ready: rancher-webhook 1/1 Running (attempt 9/90)
+[muster] waiting: capi-webhook-service exists
+[muster] airgap: mirrored missing rancher/fleet-agent:v0.16.1-beta.1
+```
+
+This does not make the image list redundant, and the two are not
+interchangeable:
+
+- healing cannot bootstrap. The node needs pause and CoreDNS before any pod
+  runs, so with nothing running there is nothing to learn from,
+- healing is serial. It finds one gap per attempt, so a whole release mirrored
+  that way would take many rounds; the list front-loads it in one sweep,
+- healing only sees what runs now. The images a downstream provision needs later
+  (`k3s-upgrade`, `system-agent-installer-k3s`, `machine`) are never pulled
+  during bring-up,
+- healing needs the host to reach the source registries. Filling the mirror up
+  front is what lets the run itself be offline. When the host cannot reach them
+  either, healing degrades to a warning naming the image, which is the same
+  failure the gap would have caused anyway.
+
+Healing only runs with `--airgap` and a `--registry`. Once it has run, the
+mirror holds that build's components, so a later `down` and `up` of the same
+version needs no repair at all.
+
 ## Talking to the cluster
 
 `muster env` prints everything needed to reach a running instance, so the usual
@@ -139,11 +212,13 @@ out: the cluster still has no route to the internet.
 ## Adding images to the mirror
 
 A pull the mirror does not cover fails, by design, with a 404 that names the
-image. Three ways to close that gap, in the order they are usually reached for.
+image. During `up` the gates repair that themselves; these are the ways to do it
+deliberately, for a cluster that is already running or one you have not built
+yet.
 
-**From what the cluster is actually asking for.** This is the one to use after a
-failure: it reads the running cluster and copies every image it references,
-including the ones a prerelease server pulls that no published list names.
+**From what the cluster is actually asking for.** It reads the running cluster
+and copies every image it references, whether or not that image is currently
+failing, which is the way to top a mirror up before an offline run:
 
 ```sh
 muster mirror --from-cluster --registry localhost:5000 --insecure-registry

@@ -164,6 +164,9 @@ mirror_plan() {
     local server_img="${RANCHER_IMAGE:-rancher/rancher}"
     printf '%s/rancher-agent:%s\n' "${server_img%/*}" "$RANCHER_IMAGE_TAG_RESOLVED"
     printf '%s\n' "$core"
+    # What the node's own k3s starts. Not in a Rancher image list at the tags the
+    # running node uses, so take them from the k3s release itself.
+    mirror_k3s_release_images
     local cmver="${CERT_MANAGER_VERSION:-$CERT_MANAGER_VERSION_DEFAULT}"
     mirror_cert_manager_images "$cmver"
     # The cert-manager chart itself, so an airgapped install gets the chart and
@@ -195,10 +198,67 @@ mirror_plan() {
 # be right about that, but the cluster itself knows exactly what it is asking
 # for, so ask it and mirror the difference.
 mirror_cluster_images() {
-  local kc="${1:?kubeconfig required}" reg="${2:?registry required}"
-  kubectl --kubeconfig "$kc" get pods -A -o jsonpath='{range .items[*]}{range .spec.containers[*]}{.image}{"\n"}{end}{range .spec.initContainers[*]}{.image}{"\n"}{end}{end}' 2>/dev/null \
+  local kc="${1:?kubeconfig required}" reg="${2:?registry required}" pods
+  # Read first, then filter. Under pipefail an unreachable API server would
+  # otherwise abort the whole run with a trap dump naming `sort`, when what the
+  # caller needs to hear is that there is no cluster to read.
+  pods="$(kubectl --kubeconfig "$kc" get pods -A -o jsonpath='{range .items[*]}{range .spec.containers[*]}{.image}{"\n"}{end}{range .spec.initContainers[*]}{.image}{"\n"}{end}{end}' 2>/dev/null)" \
+    || die "--from-cluster needs a reachable cluster; could not read pods with $kc"
+  printf '%s\n' "$pods" | sed "s|^${reg}/||" | sed '/^$/d' | sort -u
+}
+
+# mirror_failing_images <kubeconfig> <node_registry> - images the cluster is
+# trying and failing to pull, as upstream paths, on stdout.
+#
+# The node-facing registry prefix is stripped so the result is a plain
+# "rancher/x:tag" that mirror_source_ref can resolve upstream.
+mirror_failing_images() {
+  local kc="${1:?kubeconfig required}" reg="${2:?registry required}" out
+  out="$(kubectl --kubeconfig "$kc" get pods -A -o jsonpath='{range .items[*]}{range .status.containerStatuses[*]}{.state.waiting.reason}{" "}{.image}{"\n"}{end}{range .status.initContainerStatuses[*]}{.state.waiting.reason}{" "}{.image}{"\n"}{end}{end}' 2>/dev/null)" || return 0
+  printf '%s\n' "$out" \
+    | grep -E '^(ImagePullBackOff|ErrImagePull) ' \
+    | awk '{print $2}' \
     | sed "s|^${reg}/||" \
     | sed '/^$/d' | sort -u
+}
+
+# mirror_heal_pulls <kubeconfig> <registry> - mirror whatever the cluster cannot
+# pull right now, then delete the stuck pods so their controllers recreate them
+# instead of waiting out the kubelet backoff. True when something was repaired.
+#
+# This is what makes a prerelease a single pass. An alpha or rc server installs
+# system charts that name component versions no published list carries and the
+# chart itself does not know: they come from the chart catalog bundled in the
+# server image and are chosen when it starts. The cluster is the only thing that
+# knows, and it says so plainly, by failing to pull an image it names. So read
+# the names off the failures and copy those.
+#
+# One pass, no waiting: it is called between gate attempts, so the waiting is
+# the gate's job and a component that has not been created yet is simply picked
+# up on a later attempt.
+mirror_heal_pulls() {
+  local kc="${1:?kubeconfig required}" reg="${2:?registry required}"
+  local node_reg missing ref src dst healed=0
+  command -v skopeo >/dev/null 2>&1 || return 1
+  node_reg="$(airgap_registry_host "$reg")"
+  missing="$(mirror_failing_images "$kc" "$node_reg")"
+  [ -n "$missing" ] || return 1
+
+  while IFS= read -r ref; do
+    [ -n "$ref" ] || continue
+    src="$(mirror_source_ref "$ref" "${MUSTER_MIRROR_SOURCE_REGISTRY:-}")"
+    dst="$(mirror_dest_ref "$ref" "$reg")"
+    if mirror_copy "$src" "$dst" "${MIRROR_INSECURE:-}"; then
+      log_info "airgap: mirrored missing $ref"
+      healed=$((healed + 1))
+    else
+      log_warn "airgap: $ref is missing from the mirror and could not be copied"
+    fi
+  done <<<"$missing"
+
+  [ "$healed" -gt 0 ] || return 1
+  kubectl --kubeconfig "$kc" delete pods -A --field-selector status.phase!=Running,status.phase!=Succeeded >/dev/null 2>&1 || true
+  return 0
 }
 
 # mirror_k3k_tag - newest K3K release, or a pinned MIRROR_K3K_TAG. K3K versions
@@ -242,6 +302,31 @@ mirror_k3s_tag() {
   case "$img" in
     *:*) printf '%s' "${img##*:}" ;;
     *) printf 'v1.33.1-k3s1' ;;
+  esac
+}
+
+# mirror_k3s_release_images [k3s_tag] - the images a k3s release starts, on
+# stdout, one per line.
+#
+# These are not in any Rancher image list, because they belong to k3s rather than
+# to Rancher: the CoreDNS, traefik, metrics-server, local-path-provisioner,
+# klipper and pause images a node brings up on its own. A Rancher release list
+# happens to name most of them, but at the tags that Rancher's own bundled k3s
+# uses, which is not the version the node is actually running. Take them from the
+# k3s release instead, which names exactly the tags this node will ask for.
+#
+# Best effort: an unknown version or an unreachable release leaves the list empty
+# rather than failing the mirror, and the gap then shows up as a named 404.
+mirror_k3s_release_images() {
+  local tag="${1:-$(mirror_k3s_tag)}" release body
+  [ -n "$tag" ] || return 0
+  # Image tags spell the build with a dash; release tags use a plus, which has to
+  # be percent-encoded to survive the URL.
+  release="${tag/-k3s/%2Bk3s}"
+  body="$(_freshness_curl "https://github.com/k3s-io/k3s/releases/download/${release}/k3s-images.txt" || true)"
+  case "$body" in
+    *rancher/*) printf '%s\n' "$body" ;;
+    *) return 0 ;;
   esac
 }
 

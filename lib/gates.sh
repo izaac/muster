@@ -24,6 +24,17 @@ gates_wait() {
   kc="$(driver_kubeconfig)"
   host="$(driver_endpoint)"
 
+  # In airgap a gate can be waiting on a pod that will never start, because it
+  # names an image no published list carries and only the running cluster knows
+  # about. Repair between attempts so the wait is doing something about what it
+  # is waiting for, rather than timing out on a fixable gap.
+  if is_true "${AIRGAP:-}" && [ -n "${MIRROR_REGISTRY:-}" ] && [ -n "$kc" ]; then
+    # shellcheck disable=SC2329  # called indirectly, by name, from retry
+    gates_heal_hook() { mirror_heal_pulls "$kc" "$MIRROR_REGISTRY"; }
+    # shellcheck disable=SC2034  # read by retry in lib/util.sh
+    MUSTER_RETRY_HOOK=gates_heal_hook
+  fi
+
   if declare -F driver_gate >/dev/null; then
     driver_gate "$host"
   else
@@ -61,6 +72,7 @@ gates_wait() {
     log_info "waiting: /v3-public/authProviders/local responds 200"
     retry 20 5 "authProviders API 200" -- \
       bash -c "curl -sk --max-time 5 -o /dev/null -w '%{http_code}' $curl_host_flag '${curl_url}/v3-public/authProviders/local' | grep -q 200"
+
   fi
 
   if declare -F driver_settle >/dev/null; then

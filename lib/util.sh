@@ -184,6 +184,11 @@ resolve_docker_host() {
 
 # retry <attempts> <sleep_s> <description> [--] <command...>
 # Run a command until it succeeds, swallowing its output between attempts.
+#
+# MUSTER_RETRY_HOOK names a function to run between attempts. It exists so a
+# gate that is waiting on something can also repair what it is waiting for, in
+# the one case where the two cannot be separated: an airgapped cluster naming an
+# image the mirror does not have. Failures in the hook never fail the retry.
 retry() {
   local attempts="$1" sleep_s="$2" desc="$3" i
   shift 3
@@ -192,6 +197,9 @@ retry() {
     if "$@" >/dev/null 2>&1; then
       log_ok "ready: $desc (attempt $i/$attempts)"
       return 0
+    fi
+    if [ -n "${MUSTER_RETRY_HOOK:-}" ] && declare -F "$MUSTER_RETRY_HOOK" >/dev/null; then
+      "$MUSTER_RETRY_HOOK" || true
     fi
     sleep "$sleep_s"
   done

@@ -1,13 +1,23 @@
 #!/usr/bin/env bash
 # lib/airgap.sh - point a cluster at a private registry instead of the internet.
 #
-# A real airgap is a network fact rather than a setting, and reproducing one
-# locally would mean a docker network with no route out. What matters for
-# testing the install is narrower: every image must come from the mirror. That
-# is a containerd concern, so it is expressed the way containerd expresses it,
-# with a per-registry certs.d/hosts.toml that mirrors each upstream registry
-# onto ours - and, critically, with no upstream fallback, so the mirror is the
-# only place an image can come from.
+# A real airgap is two facts, and muster reproduces both:
+#
+#   1. Every image comes from the mirror. That is a containerd concern, so it is
+#      expressed the way containerd expresses it, with a per-registry
+#      certs.d/hosts.toml that mirrors each upstream registry onto ours - and,
+#      critically, with no upstream fallback, so the mirror is the only place an
+#      image can come from.
+#   2. The cluster has no route to the internet. The nodes sit on an internal
+#      container network, which has no gateway, so nothing running on them can
+#      reach anything the mirror does not hold. Published ports still work, so
+#      the k3d load balancer stays reachable from the host: the same shape as a
+#      private network fronted by a load balancer whose rules let an operator at
+#      the UI in, and nothing out.
+#
+# Without (2), only image pulls are sealed and everything else a server does -
+# calling an API, fetching a chart index, phoning home - still reaches out, so a
+# behaviour that silently depends on the internet passes as green.
 #
 # Mirroring at the container runtime rather than through systemDefaultRegistry
 # is deliberate. systemDefaultRegistry rewrites the names Rancher asks for, so a
@@ -18,10 +28,10 @@
 #
 # The fallback matters enough to spell out: k3s, handed a registries.yaml, turns
 # each mirror into a hosts.toml that also carries "server = <upstream>", which
-# containerd tries on a 404. With the nodes on a network that can reach the
-# internet, that quietly turns a missing image into an internet pull, so a gap
-# in the mirror passes as green. muster writes the hosts.toml files itself,
-# without the server line, to keep the mirror authoritative.
+# containerd tries on a 404. That quietly turns a missing image into an internet
+# pull whenever the nodes can reach one, so a gap in the mirror passes as green.
+# muster writes the hosts.toml files itself, without the server line, to keep the
+# mirror authoritative even if the network around it changes.
 
 [ -n "${_MUSTER_AIRGAP_SH:-}" ] && return 0
 _MUSTER_AIRGAP_SH=1
@@ -135,6 +145,91 @@ airgap_registry_down() {
   container_cli inspect "$name" >/dev/null 2>&1 || return 0
   container_cli rm -f "$name" >/dev/null 2>&1 || true
   log_info "airgap: removed registry $name"
+}
+
+# Label muster stamps on a network it creates, so teardown only removes its own
+# and leaves a network the caller brought (MUSTER_K3D_NETWORK) alone.
+MUSTER_NETWORK_LABEL="muster.airgap=1"
+
+# airgap_network_up <network> - ensure the cluster network exists, creating it if
+# absent so muster owns it rather than inheriting whatever k3d left behind.
+#
+# The network is a normal bridge on purpose. A container network created
+# --internal has a gateway address but installs no default route, and k3s refuses
+# to start without one ("no default routes found in /proc/net/route"), so the
+# route has to exist while the node boots. It is removed afterwards by
+# airgap_seal_network, which is what actually takes the internet away.
+airgap_network_up() {
+  local net="${1:?network required}"
+  if container_cli network inspect "$net" >/dev/null 2>&1; then
+    log_info "airgap: reusing existing network $net"
+    return 0
+  fi
+  container_cli network create --label "$MUSTER_NETWORK_LABEL" "$net" >/dev/null 2>&1 \
+    || die "could not create the network $net"
+  log_info "airgap: network $net created"
+}
+
+# airgap_seal_network <network> - take the default route away from every k3s node
+# on the network, so the cluster has no way out.
+#
+# This is the second half of the airgap, and the half that matters for anything
+# that is not an image pull. Without it the nodes sit on a NAT'd bridge and a
+# server can still call an API, fetch a chart index or phone home, so a behaviour
+# that silently depends on the internet passes as green.
+#
+# Removing the route rather than firewalling is deliberate. It is one command per
+# node, it needs no privilege beyond what the runtime already grants, and it
+# leaves everything on the node's own subnet reachable: the mirror by name, the
+# other nodes, and the runtime's DNS resolver on the gateway address, which is
+# on-link. Name resolution therefore still works, which matches an airgapped site
+# running its own DNS, while nothing can open a connection off the subnet.
+#
+# The load balancer is left alone. It is the way in, not a cluster node, and the
+# published port is the only thing an operator reaches the UI through.
+airgap_seal_network() {
+  local net="${1:?network required}" node nodes sealed=0
+  nodes="$(container_cli network inspect "$net" 2>/dev/null | grep -oE '"[Nn]ame": *"k3d-[^"]*-(server|agent)-[0-9]+"' | grep -oE 'k3d-[^"]*' | sort -u)"
+  [ -n "$nodes" ] || nodes="$(container_cli ps --filter "network=${net}" --format '{{.Names}}' 2>/dev/null | grep -E -- '-(server|agent)-[0-9]+$')"
+  for node in $nodes; do
+    container_cli exec "$node" ip route del default >/dev/null 2>&1 || continue
+    sealed=$((sealed + 1))
+  done
+  if [ "$sealed" -gt 0 ]; then
+    log_info "airgap: sealed $sealed node(s) on $net, no route off the subnet"
+  else
+    log_warn "airgap: no node on $net could be sealed; the cluster may still reach the internet"
+  fi
+}
+
+# airgap_registry_detach <network> - take the registry off a cluster network.
+#
+# The registry deliberately outlives the cluster, so that a rebuild reuses a
+# mirror that cost minutes to fill. Left attached, it also outlives the network:
+# k3d refuses to remove a network that still has a container on it, so the
+# network survives every teardown and the next run silently reuses it, which is
+# how a network created before muster made them internal can keep a later run on
+# a NAT'd bridge. Detaching before the cluster is deleted keeps the mirror and
+# lets the network go.
+airgap_registry_detach() {
+  local net="${1:?network required}" name
+  name="$(airgap_registry_name)"
+  container_cli inspect "$name" >/dev/null 2>&1 || return 0
+  container_cli network inspect "$net" >/dev/null 2>&1 || return 0
+  container_cli network disconnect "$net" "$name" >/dev/null 2>&1 || return 0
+  log_info "airgap: registry $name detached from $net"
+}
+
+# airgap_network_down <network> - remove the cluster network once the cluster is
+# gone. Removal is attempted for any network that is now empty, because the one
+# k3d created is as much a leftover as the one muster created; a network that
+# still has containers on it (a downstream sharing the management network, or a
+# network the caller brought) refuses removal and is left alone.
+airgap_network_down() {
+  local net="${1:?network required}"
+  container_cli network inspect "$net" >/dev/null 2>&1 || return 0
+  container_cli network rm "$net" >/dev/null 2>&1 || return 0
+  log_info "airgap: removed network $net"
 }
 
 # airgap_hosts_toml <registry> [insecure] - a containerd hosts.toml body that

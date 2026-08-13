@@ -57,7 +57,7 @@ flags; the most specific wins.
 |---|---|
 | [Channels and versions](docs/versions.md) | Picking a channel and version, the channel table, running a branch head on Prime, `--dry-run`, and where the Kubernetes version comes from. |
 | [Self-resolving the nightly matrix](docs/matrix.md) | `--channel-source metadata`, and the reproducible commands a CI job runs for the head rows and the Prime rows. |
-| [Airgapped installs](docs/airgap.md) | Mirroring, how the redirect works and why there is no upstream fallback, `systemDefaultRegistry` and the agent, cert-manager, and importing a downstream cluster. |
+| [Airgapped installs](docs/airgap.md) | Mirroring, the sealed network, how the redirect works and why there is no upstream fallback, `systemDefaultRegistry` and the agent, cert-manager, and importing a downstream cluster. |
 | [Dashboard UI and tests](docs/dashboard.md) | Building a UI dist from a branch, mounting it, and the Cypress/Playwright handoff. |
 | [Troubleshooting](docs/troubleshooting.md) | The errors that have a known cause and a known fix. |
 

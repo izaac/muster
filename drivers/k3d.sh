@@ -120,11 +120,15 @@ driver_up() {
   # Airgap: every node resolves the upstream registries to the mirror, and to the
   # mirror only. The containerd certs.d tree is mounted in rather than handed to
   # k3s as a registries.yaml, because k3s would re-add an upstream fallback that
-  # lets a pull the mirror does not cover slip out to the internet.
+  # lets a pull the mirror does not cover slip out to the internet. The network is
+  # created here so muster owns it; the route off it is taken away after the nodes
+  # are up, since k3s will not start without a default route.
   if is_true "${AIRGAP:-}"; then
     local certs_dir
     certs_dir="$(airgap_write_certs_d "$MIRROR_REGISTRY" "${MIRROR_INSECURE:-}")"
     create_args+=(-v "${certs_dir}:/var/lib/rancher/k3s/agent/etc/containerd/certs.d@server:*")
+    airgap_network_up "$(k3d_network)"
+    airgap_registry_attach "$(k3d_network)"
     log_info "airgap: nodes resolve every registry to ${MIRROR_REGISTRY} only (no fallback)"
   fi
   # Podman (rootless or rootful) needs the socket k3d bind-mounts into its nodes
@@ -160,10 +164,10 @@ driver_up() {
   log_info "k3d: creating cluster $INSTANCE"
   k3d "${create_args[@]}"
 
-  # The registry serves the nodes over the cluster network, so it has to be on
-  # it. The network only exists once the cluster does, hence attaching here.
+  # The nodes needed a default route to boot; they do not need one to run. Taking
+  # it away now is what makes the cluster airgapped rather than merely mirrored.
   if is_true "${AIRGAP:-}"; then
-    airgap_registry_attach "$(k3d_network)"
+    airgap_seal_network "$(k3d_network)"
   fi
 
   # Join the cluster network so the gates can reach the serverlb at its bridge IP
@@ -194,7 +198,11 @@ driver_up() {
 
 driver_down() {
   require_cmd k3d
+  # The registry outlives the cluster on purpose, but while it is attached k3d
+  # cannot remove the network, so detach first and the whole cluster goes.
+  airgap_registry_detach "$(k3d_network)"
   k3d cluster delete "$INSTANCE" || true
+  airgap_network_down "$(k3d_network)"
 }
 
 # driver_settle - optional gate hook: wait until the k3d node CPU has been below

@@ -6,9 +6,9 @@
 # The downstream joins the management cluster's own network rather than creating
 # its own. That is how its nodes reach the shared mirror registry by name and how
 # its cluster agent reaches the management Rancher. In airgap it is handed the
-# same containerd registries.yaml, so every image it pulls comes from the mirror,
-# and the registration manifest, which Rancher writes with the mirror-prefixed
-# agent image, resolves against what the mirror already holds.
+# same containerd certs.d tree, with no upstream fallback, so every image it pulls
+# comes from the mirror, and the registration manifest, which Rancher writes with
+# the mirror-prefixed agent image, resolves against what the mirror already holds.
 
 [ -n "${_MUSTER_IMPORT_SH:-}" ] && return 0
 _MUSTER_IMPORT_SH=1

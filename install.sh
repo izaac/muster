@@ -18,7 +18,7 @@
 set -eu
 
 SRC="$(cd -P "$(dirname "$0")" && pwd)"
-COMPONENTS="muster lib drivers docker completions LICENSE README.md"
+COMPONENTS="muster lib drivers docker completions docs LICENSE README.md"
 
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 if [ -n "${PREFIX:-}" ]; then

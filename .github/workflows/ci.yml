@@ -11,16 +11,35 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install shfmt and bats
+      # Every tool is pinned. Distribution packages move independently of this
+      # repository, and a linter that changes under CI turns an unrelated push
+      # into a red build: shellcheck in particular renames and renumbers its
+      # findings between releases, so a suppression comment that is correct
+      # locally is not necessarily the code CI reports.
+      - name: Install pinned shellcheck, shfmt and bats
         run: |
           set -euo pipefail
+          SHELLCHECK_VERSION=v0.11.0
           SHFMT_VERSION=v3.13.1
+          BATS_VERSION=v1.12.0
+
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | tar -xJ --strip-components=1 -C /tmp "shellcheck-${SHELLCHECK_VERSION}/shellcheck"
+          sudo install -m 0755 /tmp/shellcheck /usr/local/bin/shellcheck
+
           sudo curl -fsSL -o /usr/local/bin/shfmt \
             "https://github.com/mvdan/sh/releases/download/${SHFMT_VERSION}/shfmt_${SHFMT_VERSION}_linux_amd64"
           sudo chmod +x /usr/local/bin/shfmt
-          sudo apt-get update
-          sudo apt-get install -y bats shellcheck
 
+          git clone --depth 1 --branch "${BATS_VERSION}" https://github.com/bats-core/bats-core /tmp/bats-core
+          sudo /tmp/bats-core/install.sh /usr/local
+
+          shellcheck --version
+          shfmt --version
+          bats --version
+
+      # Kept in step with hooks/run-checks.sh, which runs the same three checks
+      # over the same files before a commit lands.
       - name: shellcheck
         run: shellcheck -x -s bash muster install.sh lib/*.sh drivers/*.sh docker/*.sh examples/*/*.sh
 

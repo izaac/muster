@@ -87,8 +87,8 @@ flags; the most specific wins.
 ## Development
 
 ```sh
-shellcheck -x -s bash muster lib/*.sh drivers/*.sh docker/*.sh examples/*/*.sh
-shfmt -d -i 2 -ci -bn muster lib drivers docker/*.sh examples/*/*.sh
+shellcheck -x -s bash muster install.sh lib/*.sh drivers/*.sh docker/*.sh examples/*/*.sh
+shfmt -d -i 2 -ci -bn muster install.sh lib drivers docker/*.sh examples/*/*.sh
 bats test/
 git config core.hooksPath hooks   # enable pre-commit/pre-push checks
 ```

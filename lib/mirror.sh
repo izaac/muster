@@ -166,7 +166,7 @@ mirror_plan() {
     printf '%s\n' "$core"
     # What the node's own k3s starts. Not in a Rancher image list at the tags the
     # running node uses, so take them from the k3s release itself.
-    mirror_k3s_release_images
+    mirror_k3s_release_images "$(mirror_k3s_tag)"
     local cmver="${CERT_MANAGER_VERSION:-$CERT_MANAGER_VERSION_DEFAULT}"
     mirror_cert_manager_images "$cmver"
     # The cert-manager chart itself, so an airgapped install gets the chart and
@@ -305,7 +305,7 @@ mirror_k3s_tag() {
   esac
 }
 
-# mirror_k3s_release_images [k3s_tag] - the images a k3s release starts, on
+# mirror_k3s_release_images <k3s_tag> - the images a k3s release starts, on
 # stdout, one per line.
 #
 # These are not in any Rancher image list, because they belong to k3s rather than
@@ -318,8 +318,7 @@ mirror_k3s_tag() {
 # Best effort: an unknown version or an unreachable release leaves the list empty
 # rather than failing the mirror, and the gap then shows up as a named 404.
 mirror_k3s_release_images() {
-  local tag="${1:-$(mirror_k3s_tag)}" release body
-  [ -n "$tag" ] || return 0
+  local tag="${1:?k3s tag required}" release body
   # Image tags spell the build with a dash; release tags use a plus, which has to
   # be percent-encoded to survive the URL.
   release="${tag/-k3s/%2Bk3s}"

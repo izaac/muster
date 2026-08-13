@@ -29,10 +29,8 @@ gates_wait() {
   # about. Repair between attempts so the wait is doing something about what it
   # is waiting for, rather than timing out on a fixable gap.
   if is_true "${AIRGAP:-}" && [ -n "${MIRROR_REGISTRY:-}" ] && [ -n "$kc" ]; then
-    # shellcheck disable=SC2329  # called indirectly, by name, from retry
-    gates_heal_hook() { mirror_heal_pulls "$kc" "$MIRROR_REGISTRY"; }
     # shellcheck disable=SC2034  # read by retry in lib/util.sh
-    MUSTER_RETRY_HOOK=gates_heal_hook
+    MUSTER_RETRY_HOOK=(mirror_heal_pulls "$kc" "$MIRROR_REGISTRY")
   fi
 
   if declare -F driver_gate >/dev/null; then

@@ -247,6 +247,16 @@ import_run() {
   local ds_kc
   ds_kc="$(INSTANCE="$ds" driver_kubeconfig)"
 
+  # The downstream's cluster agent connects to the management host by name. On a
+  # sealed network there is no upstream DNS to resolve it, and driver_up pinned
+  # the downstream's own name rather than the one it has to reach, so pin the
+  # management host here.
+  if is_true "${AIRGAP:-}"; then
+    local mgmt_ip
+    mgmt_ip="$(INSTANCE="$mgmt" k3d_lb_ip)"
+    airgap_pin_hostname "$ds_kc" "$mgmt_ip" "$mgmt_host" || true
+  fi
+
   local name="import-${ds}" url
   url="$(import_register "$mgmt_kc" "$name" "$mgmt_host")"
   import_apply_manifest "$ds_kc" "$url"

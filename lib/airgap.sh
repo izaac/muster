@@ -182,24 +182,121 @@ airgap_network_up() {
 # node, it needs no privilege beyond what the runtime already grants, and it
 # leaves everything on the node's own subnet reachable: the mirror by name, the
 # other nodes, and the runtime's DNS resolver on the gateway address, which is
-# on-link. Name resolution therefore still works, which matches an airgapped site
-# running its own DNS, while nothing can open a connection off the subnet.
+# on-link.
+#
+# The result is verified rather than assumed. Deleting a route can succeed and
+# then be undone: if anything restarts the node the runtime rebuilds its network
+# namespace with a fresh default route, and an airgap that quietly came back
+# online is worse than one that never applied.
 #
 # The load balancer is left alone. It is the way in, not a cluster node, and the
 # published port is the only thing an operator reaches the UI through.
 airgap_seal_network() {
-  local net="${1:?network required}" node nodes sealed=0
-  nodes="$(container_cli network inspect "$net" 2>/dev/null | grep -oE '"[Nn]ame": *"k3d-[^"]*-(server|agent)-[0-9]+"' | grep -oE 'k3d-[^"]*' | sort -u)"
-  [ -n "$nodes" ] || nodes="$(container_cli ps --filter "network=${net}" --format '{{.Names}}' 2>/dev/null | grep -E -- '-(server|agent)-[0-9]+$')"
+  local net="${1:?network required}" node nodes sealed=0 failed=0
+  nodes="$(airgap_network_nodes "$net")"
   for node in $nodes; do
-    container_cli exec "$node" ip route del default >/dev/null 2>&1 || continue
-    sealed=$((sealed + 1))
+    container_cli exec "$node" ip route del default >/dev/null 2>&1 || true
+    if airgap_node_is_sealed "$node"; then
+      sealed=$((sealed + 1))
+    else
+      failed=$((failed + 1))
+      log_warn "airgap: $node still has a route off the subnet"
+    fi
   done
+  if [ "$failed" -gt 0 ]; then
+    return 1
+  fi
   if [ "$sealed" -gt 0 ]; then
     log_info "airgap: sealed $sealed node(s) on $net, no route off the subnet"
-  else
-    log_warn "airgap: no node on $net could be sealed; the cluster may still reach the internet"
+    return 0
   fi
+  log_warn "airgap: no node on $net could be sealed; the cluster may still reach the internet"
+  return 1
+}
+
+# airgap_network_nodes <network> - the k3s node containers on a network, one per
+# line. The load balancer and the k3d tools container are not nodes.
+airgap_network_nodes() {
+  local net="${1:?network required}" nodes
+  nodes="$(container_cli network inspect "$net" 2>/dev/null | grep -oE '"[Nn]ame": *"k3d-[^"]*-(server|agent)-[0-9]+"' | grep -oE 'k3d-[^"]*' | sort -u)"
+  [ -n "$nodes" ] || nodes="$(container_cli ps --filter "network=${net}" --format '{{.Names}}' 2>/dev/null | grep -E -- '-(server|agent)-[0-9]+$')"
+  printf '%s\n' "$nodes"
+}
+
+# airgap_node_is_sealed <node> - true when the node has no default route.
+airgap_node_is_sealed() {
+  local node="${1:?node required}" routes
+  # The read has to succeed for the answer to mean anything; an unreachable node
+  # is not a sealed one. grep is kept off the exit path because "no match" is
+  # exactly the success case here.
+  routes="$(container_cli exec "$node" ip route 2>/dev/null)" || return 1
+  ! printf '%s\n' "$routes" | grep -q '^default'
+}
+
+# airgap_pin_hostname <kubeconfig> <ip> <hostname> - make a name resolve inside
+# the cluster without asking anything upstream.
+#
+# Rancher is served at <load-balancer-ip>.sslip.io, and the components that talk
+# to it are pods, so they resolve through CoreDNS. Once the nodes have no route
+# out, CoreDNS has nothing to forward to, and whether that matters turns out to
+# depend on the container runtime:
+#
+#   - Podman answers from aardvark-dns on the gateway address, which is on-link,
+#     and the host performs the upstream lookup. Names kept resolving after
+#     sealing, which also meant the sealed cluster could still resolve any name
+#     on the internet.
+#   - Docker answers from 127.0.0.11 inside the container and forwards through
+#     the container's own routing, so sealing takes DNS with it and the Rancher
+#     hostname stops resolving.
+#
+# Neither is what an airgapped site looks like. A real one runs its own DNS and
+# answers for its own names, so muster does the same: the hostname is pinned in
+# CoreDNS and nothing is asked upstream on either runtime.
+#
+# k3s imports /etc/coredns/custom/*.server from an optional coredns-custom
+# ConfigMap, which is the supported way to add a server block. Editing the
+# managed Corefile would work too, and would be undone the next time k3s applied
+# its own manifest.
+airgap_pin_hostname() {
+  local kc="${1:?kubeconfig required}" ip="${2:?ip required}" host="${3:?hostname required}" zone
+  command -v kubectl >/dev/null 2>&1 || return 0
+  [ -n "$ip" ] || return 0
+
+  # The registrable zone, so the block is authoritative for it: a query for our
+  # name is answered and any other name under it is refused rather than escaping.
+  zone="$(printf '%s' "$host" | awk -F. 'NF>=2 { print $(NF-1)"."$NF; next } { print }')"
+
+  retry 30 2 "coredns deployment" -- \
+    kubectl --kubeconfig "$kc" -n kube-system get deploy coredns
+
+  kubectl --kubeconfig "$kc" apply -f - >/dev/null 2>&1 <<EOF || {
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: kube-system
+data:
+  muster.server: |
+    ${zone}:53 {
+        hosts {
+            ${ip} ${host}
+            fallthrough
+        }
+    }
+EOF
+    log_warn "airgap: could not pin $host in CoreDNS; in-cluster lookups of it will fail"
+    return 1
+  }
+
+  # The reload plugin watches the Corefile, not the files it imports, so a new
+  # server block needs the pods restarted to be picked up. Wait for them to be
+  # Ready again rather than only for the rollout: the gates that follow resolve
+  # names immediately, and a Service with no ready endpoint refuses the query.
+  kubectl --kubeconfig "$kc" -n kube-system rollout restart deploy/coredns >/dev/null 2>&1 || true
+  kubectl --kubeconfig "$kc" -n kube-system rollout status deploy/coredns --timeout=120s >/dev/null 2>&1 || true
+  kubectl --kubeconfig "$kc" -n kube-system wait --for=condition=Ready pod \
+    -l k8s-app=kube-dns --timeout=120s >/dev/null 2>&1 || true
+  log_info "airgap: $host resolves to $ip from inside the cluster (no upstream DNS)"
 }
 
 # airgap_registry_detach <network> - take the registry off a cluster network.
@@ -207,10 +304,8 @@ airgap_seal_network() {
 # The registry deliberately outlives the cluster, so that a rebuild reuses a
 # mirror that cost minutes to fill. Left attached, it also outlives the network:
 # k3d refuses to remove a network that still has a container on it, so the
-# network survives every teardown and the next run silently reuses it, which is
-# how a network created before muster made them internal can keep a later run on
-# a NAT'd bridge. Detaching before the cluster is deleted keeps the mirror and
-# lets the network go.
+# network survives every teardown and the next run silently reuses it. Detaching
+# before the cluster is deleted keeps the mirror and lets the network go.
 airgap_registry_detach() {
   local net="${1:?network required}" name
   name="$(airgap_registry_name)"

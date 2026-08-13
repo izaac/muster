@@ -38,7 +38,7 @@ removes their default route. The result is the shape a real airgapped site has:
 | Node or pod to the internet | no | no default route, nothing off the subnet is reachable |
 | Node to the mirror | yes | the registry is on the same subnet, addressed by container name |
 | Node to node, pod to pod | yes | same subnet |
-| Name resolution | yes | the runtime's resolver is the gateway address, which is on-link |
+| Cluster DNS, and the Rancher hostname | yes | answered inside the cluster, see below |
 | Host to the Rancher UI | yes | the k3d load balancer publishes a host port |
 
 That last row is the equivalent of the bastion and load balancer rules a real
@@ -53,10 +53,48 @@ refuses to start without one:
 level=fatal msg="Error: no default routes found in /proc/net/route"
 ```
 
-So the route has to exist while the node boots, and is taken away afterwards. One
-consequence is worth knowing: a node container that is restarted boots without a
-default route and k3s will fail with that same message. Rebuild the cluster
-rather than restarting a node.
+So the route has to exist while the node boots, and is taken away afterwards.
+
+Two things follow from that, and both are handled rather than hoped for.
+
+**Flannel must not need the route.** It finds its interface by following the
+default route and re-resolves it while the cluster runs, so removing the route
+kills it:
+
+```
+level=fatal msg="flannel exited: failed to get default interface: Unable to find default route"
+```
+
+k3s then restarts the node, the runtime rebuilds its network namespace with a
+fresh default route, and the airgap is silently undone: the cluster looks healthy
+and is back on the internet. In airgap muster passes `--flannel-iface=eth0`, so
+the default route is out of flannel's path entirely.
+
+**The seal is verified, not assumed.** Sealing checks each node afterwards and
+fails loudly if a route is still there, and it is asserted again once the cluster
+has settled, so anything that restarted a node in between is caught.
+
+**DNS is answered locally.** Rancher is served at `<load-balancer-ip>.sslip.io`,
+and the pods that talk to it resolve through CoreDNS, which with no route out has
+nothing to forward to. What that costs turns out to depend on the runtime:
+
+| | after sealing |
+|---|---|
+| Podman | names kept resolving: aardvark-dns answers on the gateway address, which is on-link, and the host does the upstream lookup |
+| Docker | DNS stopped: the resolver at `127.0.0.11` forwards through the container's own routing |
+
+Neither is a real airgap, and on Docker it would break `cattle-cluster-agent`
+outright. So muster answers for the name itself, the way an airgapped site runs
+its own DNS: it adds a server block for the zone through k3s's supported
+`coredns-custom` ConfigMap, mapping the Rancher hostname to the load balancer
+address. That works the same on both runtimes and depends on nothing upstream.
+
+One residual is worth stating plainly: unrelated public names may still *resolve*
+on both runtimes, because CoreDNS still forwards to the node's resolver and the
+runtime answers it out-of-band. Nothing can be *reached*, which is what the test
+is about, and blocking resolution outright is not free: a catch-all NXDOMAIN in
+CoreDNS is evaluated before the `kubernetes` plugin and takes cluster DNS with
+it.
 
 Verifying it on a running cluster:
 
@@ -67,6 +105,9 @@ docker exec k3d-e2e-server-0 ip route
 # egress is refused, the mirror is not
 docker exec k3d-e2e-server-0 wget -T5 -qO- https://1.1.1.1        # fails
 docker exec k3d-e2e-server-0 wget -T5 -qO- http://muster-registry-e2e:5000/v2/   # 200
+
+# the Rancher hostname resolves from inside, without upstream DNS
+kubectl -n kube-system get cm coredns-custom -o jsonpath='{.data.muster\.server}'
 ```
 
 ## Where the image list comes from
@@ -343,7 +384,9 @@ muster import --airgap --registry localhost:5000 --insecure-registry --version 2
 The downstream joins the management cluster's own network, so its nodes reach the
 same mirror by name and its agent reaches the management Rancher. It gets the
 same `certs.d` tree, with no upstream fallback, and its own default route is
-removed once it is up, so it is sealed exactly as the management cluster is.
+removed once it is up, so it is sealed exactly as the management cluster is. It
+is also given the management hostname in its own CoreDNS, because that is the
+name its cluster agent connects to and there is no upstream DNS to resolve it.
 `import` registers the cluster in Rancher, fetches the
 registration manifest (reading the token from the Secret Rancher references, which
 is where current Rancher keeps it), applies it to the downstream, and waits for

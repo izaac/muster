@@ -127,6 +127,14 @@ driver_up() {
     local certs_dir
     certs_dir="$(airgap_write_certs_d "$MIRROR_REGISTRY" "${MIRROR_INSECURE:-}")"
     create_args+=(-v "${certs_dir}:/var/lib/rancher/k3s/agent/etc/containerd/certs.d@server:*")
+    # Flannel finds its interface by following the default route, and re-resolves
+    # it while the cluster runs, so removing that route later kills it:
+    #   fatal: flannel exited: failed to get default interface: Unable to find
+    #   default route
+    # k3s then restarts the node, the runtime rebuilds its network namespace with
+    # a fresh default route, and the airgap is silently undone. Naming the
+    # interface takes the default route out of flannel's path entirely.
+    create_args+=(--k3s-arg "--flannel-iface=eth0@server:*")
     airgap_network_up "$(k3d_network)"
     airgap_registry_attach "$(k3d_network)"
     log_info "airgap: nodes resolve every registry to ${MIRROR_REGISTRY} only (no fallback)"
@@ -168,6 +176,11 @@ driver_up() {
   # it away now is what makes the cluster airgapped rather than merely mirrored.
   if is_true "${AIRGAP:-}"; then
     airgap_seal_network "$(k3d_network)"
+    # With no route out there is no upstream DNS, and Rancher is served at a
+    # name. Answer for it inside the cluster, the way an airgapped site does.
+    if ! is_true "${EXTERNAL:-}"; then
+      airgap_pin_hostname "$(driver_kubeconfig)" "$(k3d_lb_ip)" "$(driver_endpoint)" || true
+    fi
   fi
 
   # Join the cluster network so the gates can reach the serverlb at its bridge IP
@@ -215,6 +228,16 @@ driver_down() {
 # of cores the node container sees to get a node-utilisation percentage, so the
 # threshold means "fraction of the whole node" (as originally implemented) and
 # does not stall on a fixed fraction of a single core.
+# driver_reseal - re-assert the airgap after the cluster has settled.
+#
+# Sealing removes a route; a node restart puts it back, because the runtime
+# rebuilds the network namespace from scratch. Nothing should restart a node once
+# flannel has been given its interface, but "should" is not a guarantee worth
+# resting an airgap on, so the state is re-asserted and reported.
+driver_reseal() {
+  airgap_seal_network "$(k3d_network)"
+}
+
 driver_settle() {
   local threshold=50 settle_samples=3 sample_interval=10 max_attempts=30
   local low_streak=0 cpu i node="k3d-${INSTANCE}-server-0"

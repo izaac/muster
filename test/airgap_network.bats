@@ -19,6 +19,8 @@ setup() {
   NETWORK_MEMBERS=""
   NETWORK_RM_FAILS=""
   ROUTED_NODES=""
+  STICKY_NODES=""
+  LB_MEMBERS=""
 
   # Defined here, after lib/util.sh, because that is where the real container_cli
   # comes from and it would otherwise overwrite the stub.
@@ -43,9 +45,23 @@ setup() {
         return 0
         ;;
       exec)
-        # "$2" is the node; only a node that still has a default route loses one.
-        printf '%s\n' "$ROUTED_NODES" | grep -qx "$2" || return 1
-        return 0
+        # "$2" is the node, and only a node that exists answers at all. A node in
+        # ROUTED_NODES still has a default route; STICKY_NODES models one that
+        # keeps coming back, which is what a restarted node does.
+        printf '%s\n' "$NETWORK_MEMBERS $LB_MEMBERS" | grep -qw "$2" || return 1
+        case "${5:-}" in
+          del)
+            printf '%s\n' "$ROUTED_NODES" | grep -qx "$2" || return 1
+            printf '%s\n' "$STICKY_NODES" | grep -qx "$2" && return 0
+            ROUTED_NODES="$(printf '%s\n' "$ROUTED_NODES" | grep -vx "$2")"
+            return 0
+            ;;
+          *)
+            printf '%s\n' "$ROUTED_NODES" | grep -qx "$2" && printf 'default via 10.0.0.1 dev eth0\n'
+            printf '10.42.0.0/24 dev cni0 scope link\n'
+            return 0
+            ;;
+        esac
         ;;
       ps) printf '%s\n' "$NETWORK_MEMBERS" ;;
     esac
@@ -92,9 +108,20 @@ called() { grep -qF -- "$1" "$CALLS"; }
   called "exec k3d-e2e-server-0 ip route del default"
 }
 
+@test "airgap_seal_network fails when a node keeps its route (a restart undid it)" {
+  EXISTING_NETWORKS="k3d-e2e"
+  NETWORK_MEMBERS="k3d-e2e-server-0"
+  ROUTED_NODES="k3d-e2e-server-0"
+  STICKY_NODES="k3d-e2e-server-0"
+  run airgap_seal_network k3d-e2e
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"still has a route off the subnet"* ]]
+}
+
 @test "airgap_seal_network leaves the load balancer alone (it is the way in)" {
   EXISTING_NETWORKS="k3d-e2e"
-  NETWORK_MEMBERS="k3d-e2e-serverlb"
+  NETWORK_MEMBERS=""
+  LB_MEMBERS="k3d-e2e-serverlb"
   ROUTED_NODES="k3d-e2e-serverlb"
   run airgap_seal_network k3d-e2e
   run called "exec k3d-e2e-serverlb"
@@ -104,17 +131,19 @@ called() { grep -qF -- "$1" "$CALLS"; }
 @test "airgap_seal_network warns rather than passing silently when it sealed nothing" {
   EXISTING_NETWORKS="k3d-e2e"
   run airgap_seal_network k3d-e2e
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   [[ "$output" == *"no node"* ]]
 }
 
 @test "airgap_seal_network is idempotent for an already sealed node" {
+  # Deleting the route fails because there is none, but the node is verified
+  # sealed all the same, which is what re-asserting after a settle relies on.
   EXISTING_NETWORKS="k3d-e2e"
   NETWORK_MEMBERS="k3d-e2e-server-0"
-  ROUTED_NODES=""
+  ROUTED_NODES="k3d-e2e-server-0"
   run airgap_seal_network k3d-e2e
   [ "$status" -eq 0 ]
-  [[ "$output" == *"no node"* ]]
+  [[ "$output" == *"sealed 1 node"* ]]
 }
 
 # --- airgap_registry_detach --------------------------------------------------

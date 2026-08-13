@@ -32,7 +32,6 @@ gates_wait() {
     # shellcheck disable=SC2034  # read by retry in lib/util.sh
     MUSTER_RETRY_HOOK=(mirror_heal_pulls "$kc" "$MIRROR_REGISTRY")
   fi
-
   if declare -F driver_gate >/dev/null; then
     driver_gate "$host"
   else
@@ -76,6 +75,14 @@ gates_wait() {
   if declare -F driver_settle >/dev/null; then
     log_info "waiting: substrate to settle"
     driver_settle || log_warn "substrate did not settle in time - proceeding anyway"
+  fi
+
+  # Anything that restarts a node during bring-up gives it a fresh network
+  # namespace, and with it a default route, so an airgap can quietly come back
+  # online between the seal and here. Assert it once more now that the cluster
+  # has stopped moving, and say so plainly if it could not be re-applied.
+  if is_true "${AIRGAP:-}" && declare -F driver_reseal >/dev/null; then
+    driver_reseal || log_warn "airgap: the cluster has a route to the internet; results are not airgapped"
   fi
 
   # warmup_provisioning drives kubectl; only meaningful when the driver

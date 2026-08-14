@@ -56,11 +56,23 @@ muster up --dry-run --repo rancher-latest --version 2.13   # newest rc:    v2.13
 muster up --dry-run --repo rancher-alpha  --version 2.15   # newest alpha: v2.15.1-alpha1
 ```
 
-A `metadata:` head row deploys from whichever registry the key names, but a
-`-head` build is community-type even on the Prime registry; only the rc/alpha
-Prime rows report `RancherPrime`. `--prefer-staging` is a date/patch probe for
-ad-hoc use and is deliberately **not** a CI input, because it is not reproducible
-day to day.
+A `metadata:` head row deploys from whichever registry the key names, and it
+still reports Community, so `RancherPrime` must not be asserted on it. The
+reason is narrower than "head builds are Community", because two different tags
+are both called a head build:
+
+| Tag | Where it is published | Reports |
+|---|---|---|
+| `vX.Y-head` (branch head, rolling) | Docker Hub, and the staging registry while that line publishes there | `community` |
+| `vX.Y.Z-<sha>-head` (one commit) | staging registry only | `prime` |
+
+The matrix rows use the first: `branches-metadata.json` pins `v2.14-head`, so a
+`metadata:` row is a Community-type build wherever it is served from. The second
+is what `rancher-latest` head charts point at, and it is Prime, which is why
+pinning one of those charts is a way to run a Prime head build.
+
+`--prefer-staging` is a date/patch probe for ad-hoc use and is deliberately
+**not** a CI input, because it is not reproducible day to day.
 
 For fixed-channel selection and reading the flavour off an image, see
 [Channels and versions](versions.md).

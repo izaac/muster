@@ -69,9 +69,21 @@ muster up --provider k3d --repo rancher-alpha --version head \
   --image-tag v2.15.1-965e1896835ebcb961689a35f4bfe34e43ce2a4d-head
 ```
 
-On the staging registry a head build is only ever published under its commit
-name. There is no `v2.16-head`, and no plain `head`, so reading a flavour off
-one of those looks like this:
+On the staging registry a head build is published under two different tag
+schemes, and only one of them is Community:
+
+| Tag | Published to | Reports |
+|---|---|---|
+| `vX.Y-head` (branch head, rolling) | Docker Hub, and staging while that line publishes there | `community` |
+| `vX.Y.Z-<sha>-head` (one commit) | staging only | `prime` |
+
+The nightly matrix rows use the first, because `branches-metadata.json` pins
+`v2.14-head`, which is why a `metadata:` row must not assert `RancherPrime`. The
+`rancher-latest` head charts point at the second, which is what makes pinning one
+a way to run a Prime head build.
+
+There is also no `v2.16-head` and no plain `head` on the staging registry, so
+reading a flavour off one by hand looks like this:
 
 ```sh
 $ skopeo inspect --config docker://stgregistry.suse.com/rancher/rancher:v2.16-head \
@@ -79,11 +91,10 @@ $ skopeo inspect --config docker://stgregistry.suse.com/rancher/rancher:v2.16-he
 $
 ```
 
-Nothing comes back, which is easy to read as `RANCHER_VERSION_TYPE=` and
-conclude the build is Community. It is not a Community build; there is no build.
-Every commit-named 2.16 head on that registry reports `prime`. This is why
-`--dry-run` distinguishes `missing` from `community` rather than collapsing both
-into "not Prime": use it instead of grepping the image by hand.
+Nothing comes back, which is easy to read as `RANCHER_VERSION_TYPE=` and conclude
+the build is Community. It is not a Community build; there is no build. This is
+why `--dry-run` distinguishes `missing` from `community` rather than collapsing
+both into "not Prime": use it instead of grepping the image by hand.
 
 A value containing a `/` is taken as a full reference and moves the registry
 too, which is how a chart from one channel is paired with an image from

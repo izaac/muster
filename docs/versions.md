@@ -27,27 +27,63 @@ muster up --provider k3d --repo rancher-com-alpha --version head
 
 ### Testing a branch head on Prime
 
-A branch head ships no chart of its own, so `--version head` on a Prime channel
-resolves the newest chart in that channel and takes its tag, which is the last
-alpha rather than the head build. `--image-tag` overrides the image while
-leaving the chart alone:
+`rancher-latest` publishes a chart for each head build, named after the commit
+(`2.16.0-<sha>-head`), so a head can be resolved the same way as any other
+version, chart and image together:
 
 ```sh
-# Newest Prime chart, running the current release-2.15 head build
+# Newest Prime head: master today, since 2.16.0 is master's milestone
+muster up --provider k3d --repo rancher-latest --version head
+```
+
+```
+  chart version    2.16.0-ff28ae6aea8dcb820bcc2ff8bfd1bc45d4e2ee65-head
+  image            stgregistry.suse.com/rancher/rancher:v2.16.0-...-head
+  flavour          prime  (Prime-only UI extensions will load)
+```
+
+Because those charts are commit-named, `--version head` follows whatever was
+built last, which is what makes it unsuitable as a CI input. Pin one to get a
+reproducible run; a version naming one published chart is matched exactly, so no
+channel filter applies:
+
+```sh
+muster up --provider k3d --repo rancher-latest \
+  --version 2.15.1-c7913dce4e586d7b87cf73bbf6443d953bd184f7-head
+```
+
+The available ones are in the channel listing:
+
+```sh
+helm search repo rancher-latest/rancher --devel --versions --max-col-width=0 \
+  | grep -- '-head'
+```
+
+`rancher-alpha` carries no head charts, only alphas. On that channel
+`--version head` resolves the newest alpha rather than a head build, and
+`--image-tag` is the way to run a head server against it:
+
+```sh
+# Newest Prime alpha chart, running a release-2.15 head build
 muster up --provider k3d --repo rancher-alpha --version head \
   --image-tag v2.15.1-965e1896835ebcb961689a35f4bfe34e43ce2a4d-head
 ```
 
-Prime head builds are tagged by commit, so the tag has to be looked up:
+On the staging registry a head build is only ever published under its commit
+name. There is no `v2.16-head`, and no plain `head`, so reading a flavour off
+one of those looks like this:
 
 ```sh
-skopeo list-tags docker://stgregistry.suse.com/rancher/rancher \
-  | grep -oE '"v2\.15[^"]*-head"'
+$ skopeo inspect --config docker://stgregistry.suse.com/rancher/rancher:v2.16-head \
+    | grep -o 'RANCHER_VERSION_TYPE=[a-z]*'
+$
 ```
 
-Note that Prime publishes no master head. The 2.16 builds on the staging
-registry report `RANCHER_VERSION_TYPE=` and are Community, so the newest Prime
-head is on the highest cut release branch, not on master.
+Nothing comes back, which is easy to read as `RANCHER_VERSION_TYPE=` and
+conclude the build is Community. It is not a Community build; there is no build.
+Every commit-named 2.16 head on that registry reports `prime`. This is why
+`--dry-run` distinguishes `missing` from `community` rather than collapsing both
+into "not Prime": use it instead of grepping the image by hand.
 
 A value containing a `/` is taken as a full reference and moves the registry
 too, which is how a chart from one channel is paired with an image from
@@ -65,6 +101,25 @@ server that reports `RancherPrime: false`. It comes up and the UI works, which
 is worth knowing in both directions: the chart channel is not a reliable
 statement about the build, and a component set can be varied independently of
 the server to reproduce a version skew.
+
+### When a line has no release candidate yet
+
+`rancher-latest` selects release candidates and `rancher-alpha` selects alphas,
+so a bare minor means "the newest rc (or alpha) of that line". A line that is
+published but has not reached that stage resolves to nothing, and muster says
+which shapes it does carry rather than only that nothing matched:
+
+```
+$ muster up --dry-run --repo rancher-latest --version 2.15
+[muster] ERROR the 2.15 line is in rancher-latest but has no -rc chart yet;
+         it carries: 2.15.1-30739f3e...-head 2.15.1-ac63bee9...-head
+[muster] ERROR for a 2.15 pre-release try --repo rancher-alpha --version 2.15,
+         or pin one of the above with --version
+[muster] ERROR no chart version in rancher-latest matches '2.15'
+```
+
+The filter is deliberate: if a bare minor fell back to a head build, a pinned CI
+input would quietly change from a fixed release candidate to a rolling one.
 
 ### Channels
 

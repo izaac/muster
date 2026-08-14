@@ -780,3 +780,140 @@ _resolve_with_override() {
   [ "$RANCHER_IMAGE" = "stgregistry.suse.com/rancher/rancher" ]
   [ "$RANCHER_IMAGE_TAG_RESOLVED" = "v2.15.1-965e189-head" ]
 }
+
+# --- untruncated search rows -------------------------------------------------
+#
+# helm truncates table columns to 50 characters and marks the cut with a literal
+# "...", which silently corrupted any chart named after a commit: the ellipsis
+# ended up in the chart version and the image tag, and the install then asked a
+# registry for a tag that cannot exist.
+
+@test "helm_search_charts asks helm not to truncate the columns" {
+  helm() { printf 'helm %s\n' "$*"; }
+  run helm_search_charts rancher-latest
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--max-col-width=0"* ]]
+}
+
+@test "helm_search_charts scopes the search to the repository's rancher chart" {
+  helm() { printf 'helm %s\n' "$*"; }
+  run helm_search_charts rancher-alpha
+  [[ "$output" == *"rancher-alpha/rancher"* ]]
+  [[ "$output" == *"--devel"* ]]
+  [[ "$output" == *"--versions"* ]]
+}
+
+@test "helm_search_charts yields nothing rather than failing when helm errors" {
+  helm() { return 1; }
+  run helm_search_charts rancher-latest
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# --- resolve_chart_version: pinning a chart the channel filter excludes -------
+
+@test "an exact commit-tagged pin resolves even though it is not an -rc" {
+  local search
+  search="$(
+    printf '%s\n' \
+      'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+      'rancher-latest/rancher	2.15.1-c7913dce4e586d7b87cf73bbf6443d953bd184f7-head	x	Install Rancher Server' \
+      'rancher-latest/rancher	2.15.1-30739f3ee72a3390477afd1a6540bb25a2b93517-head	x	Install Rancher Server'
+  )"
+  [ "$(resolve_chart_version rancher-latest 2.15.1-c7913dce4e586d7b87cf73bbf6443d953bd184f7-head "$search")" \
+    = "2.15.1-c7913dce4e586d7b87cf73bbf6443d953bd184f7-head" ]
+}
+
+@test "an exact pin tolerates a leading v" {
+  [ "$(resolve_chart_version rancher-latest v2.12.5-rc10 "$SEARCH_LATEST")" = "2.12.5-rc10" ]
+}
+
+@test "an exact pin never crosses into another repository's chart" {
+  local search
+  search="$(
+    printf '%s\n' \
+      'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+      'rancher-alpha/rancher	2.15.1-only-in-alpha	x	Install Rancher Server'
+  )"
+  [ -z "$(resolve_chart_version rancher-latest 2.15.1-only-in-alpha "$search")" ]
+}
+
+@test "a suffixed tag that matches nothing exactly still falls through to the filter" {
+  # 2.12.5-rc99 is not published; the -rc filter then picks the line's newest rc,
+  # which is the behaviour that existed before exact pinning was added.
+  [ "$(resolve_chart_version rancher-latest 2.12.5-rc99 "$SEARCH_LATEST")" = "2.12.5-rc10" ]
+}
+
+@test "a bare minor still means the newest rc, not an exact match" {
+  [ "$(resolve_chart_version rancher-latest 2.12 "$SEARCH_LATEST")" = "2.12.5-rc10" ]
+}
+
+# --- helm_channel_line_hint --------------------------------------------------
+#
+# rancher-latest selects -rc and rancher-alpha selects -alpha, so a line that is
+# published but has not reached that stage resolves to nothing. Saying only "no
+# chart version matches" points away from the answer, because the version is in
+# the listing in a shape the channel does not select.
+
+@test "the hint names the shapes the line does carry, and where the build lives" {
+  local search
+  search="$(
+    printf '%s\n' \
+      'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+      'rancher-latest/rancher	2.15.1-c7913dce4e586d7b87cf73bbf6443d953bd184f7-head	x	Install Rancher Server' \
+      'rancher-latest/rancher	2.16.0-ff28ae6aea8dcb820bcc2ff8bfd1bc45d4e2ee65-head	x	Install Rancher Server'
+  )"
+  run helm_channel_line_hint rancher-latest 2.15 "$search"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"2.15 line is in rancher-latest but has no -rc chart yet"* ]]
+  [[ "$output" == *"2.15.1-c7913dce4e586d7b87cf73bbf6443d953bd184f7-head"* ]]
+  [[ "$output" == *"--repo rancher-alpha --version 2.15"* ]]
+  # A chart from another line is not evidence about this one.
+  [[ "$output" != *"2.16.0"* ]]
+}
+
+@test "the hint points an alpha miss at the rc channel" {
+  local search
+  search="$(
+    printf '%s\n' \
+      'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+      'rancher-alpha/rancher	2.13.8-rc1	x	Install Rancher Server'
+  )"
+  run helm_channel_line_hint rancher-alpha 2.13 "$search"
+  [[ "$output" == *"has no -alpha chart yet"* ]]
+  [[ "$output" == *"--repo rancher-latest --version 2.13"* ]]
+}
+
+@test "the hint stays silent when the line is genuinely absent" {
+  run helm_channel_line_hint rancher-latest 2.99 "$SEARCH_LATEST"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "the hint stays silent for a channel that has no shape filter" {
+  run helm_channel_line_hint rancher-prime-ga 2.99 "$SEARCH_PRIME"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "the hint matches a full patch pin as well as a bare minor" {
+  local search
+  search="$(
+    printf '%s\n' \
+      'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+      'rancher-latest/rancher	2.15.1-c7913dce4e586d7b87cf73bbf6443d953bd184f7-head	x	Install Rancher Server'
+  )"
+  run helm_channel_line_hint rancher-latest 2.15.1 "$search"
+  [[ "$output" == *"2.15.1 line is in rancher-latest"* ]]
+}
+
+@test "the hint does not treat a different minor as the same line" {
+  local search
+  search="$(
+    printf '%s\n' \
+      'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+      'rancher-latest/rancher	2.150.0-head	x	Install Rancher Server'
+  )"
+  run helm_channel_line_hint rancher-latest 2.15 "$search"
+  [ -z "$output" ]
+}

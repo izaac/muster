@@ -108,6 +108,25 @@ resolve_chart_version() {
     return 0
   fi
 
+  # A tag carrying a pre-release suffix may name one published chart outright, so
+  # take that chart when it exists. Without this the channel filter below still
+  # applies, and a pin like 2.15.1-<sha>-head on rancher-latest resolves to
+  # nothing because it is not an -rc, even though it is sitting in the listing.
+  #
+  # Only ever an addition: when the tag matches no chart exactly, resolution
+  # falls through to the filter, so every tag that resolved before still resolves
+  # to the same chart.
+  case "$tag" in
+    *-*)
+      local exact
+      exact="$(printf '%s\n' "$search" | awk -v want="${tag#v}" '$2 == want { print $2; exit }')"
+      if [ -n "$exact" ]; then
+        printf '%s' "$exact"
+        return 0
+      fi
+      ;;
+  esac
+
   case "$repo" in
     rancher-alpha) filter="-alpha" ;;
     rancher-latest) filter="-rc" ;;
@@ -645,7 +664,7 @@ helm_resolve_metadata() {
   require_cmd helm
   retry 3 5 "helm repo add $repo" -- helm repo add "$repo" "$url" --force-update
   retry 3 5 "helm repo update" -- helm repo update "$repo"
-  search="$(helm search repo "${repo}/rancher" --devel --versions 2>/dev/null || true)"
+  search="$(helm_search_charts "$repo")"
   RANCHER_CHART_VERSION="$(metadata_pick_chart "$repo" "$search")"
   [ -n "$RANCHER_CHART_VERSION" ] || die "channel-source metadata: no rancher chart at ${url} for ${branch}"
 
@@ -672,6 +691,64 @@ helm_resolve_metadata() {
   helm_verify_image
 }
 
+# helm_search_charts <repo> - every published version of a repository's rancher
+# chart, as `helm search repo` table rows, on stdout.
+#
+# --max-col-width=0 is what makes the rows usable. helm truncates columns to 50
+# characters by default and marks the cut with a literal "...", so a chart named
+# after a commit (2.16.0-<40 hex>-head, 55 characters) came back as
+# "2.16.0-ff28ae...ee65..." and that string became the chart version and the
+# image tag. The install then asked a registry for a tag containing an ellipsis,
+# which cannot exist, so any channel whose head builds are commit-tagged failed
+# a preflight that looked like a missing image rather than a mangled name.
+helm_search_charts() {
+  local repo="${1:?repo required}"
+  helm search repo "${repo}/rancher" --devel --versions --max-col-width=0 2>/dev/null || true
+}
+
+# helm_channel_line_hint <repo> <tag> <search> - explain a miss that is really a
+# channel mismatch rather than a missing version, on stdout.
+#
+# rancher-latest carries release candidates and rancher-alpha carries alphas, so
+# resolving a bare minor in either filters on that suffix. A line that exists in
+# the channel but has not reached that stage yet resolves to nothing, and the
+# bare "no chart version matches" is actively misleading: the version is right
+# there in the listing, in a shape this channel does not select. Say which shapes
+# the line does carry and where the build being asked for actually lives.
+#
+# The filter itself is deliberate and stays: a bare minor on rancher-latest means
+# "the newest rc of that line", and resolving it to a rolling commit build
+# instead would quietly change what a pinned CI input installs.
+helm_channel_line_hint() {
+  local repo="${1:?repo required}" tag="${2:?tag required}" search="${3:-}"
+  local vs filter alt on_line newest
+  vs="$(version_string "$tag")"
+  case "$repo" in
+    rancher-latest)
+      filter="-rc"
+      alt="rancher-alpha"
+      ;;
+    rancher-alpha)
+      filter="-alpha"
+      alt="rancher-latest"
+      ;;
+    *) return 0 ;;
+  esac
+
+  # Same repository scoping the resolver uses, so this describes what it saw.
+  on_line="$(printf '%s\n' "$search" \
+    | grep "^${repo}/rancher[[:space:]]" \
+    | awk '{print $2}' \
+    | grep -E "^${vs//./\\.}([.-]|$)" || true)"
+  [ -n "$on_line" ] || return 0
+
+  newest="$(printf '%s\n' "$on_line" | sort -V | tail -3 | tr '\n' ' ')"
+  printf 'the %s line is in %s but has no %s chart yet; it carries: %s\n' \
+    "$vs" "$repo" "$filter" "$newest"
+  printf 'for a %s pre-release try --repo %s --version %s, or pin one of the above with --version\n' \
+    "$vs" "$alt" "$vs"
+}
+
 # helm_resolve_version - orchestrate the impure resolution against a live helm.
 # Validates RANCHER_REPO, adds/updates the repo, runs the search, and exports:
 #   RANCHER_CHART_URL RANCHER_IMAGE RANCHER_CHART_VERSION RANCHER_IMAGE_TAG_RESOLVED
@@ -694,13 +771,24 @@ helm_resolve_version() {
   retry 3 5 "helm repo update" -- helm repo update "$repo"
 
   local search
-  search="$(helm search repo "${repo}/rancher" --devel --versions 2>/dev/null || true)"
+  search="$(helm_search_charts "$repo")"
   RANCHER_CHART_VERSION="$(resolve_chart_version "$repo" "$tag" "$search" || true)"
   if [ -z "$RANCHER_CHART_VERSION" ]; then
-    local available why
-    available="$(printf '%s\n' "$search" | sed -n '1!p' | awk '{print $2}' | sort -V | tail -5 | tr '\n' ' ')"
+    local available why line_hint
+    line_hint="$(helm_channel_line_hint "$repo" "$tag" "$search" || true)"
     why="$(helm_missing_tag_hint "${RANCHER_IMAGE:-rancher/rancher}" "$tag" || true)"
-    [ -n "$available" ] && log_err "newest in ${repo}: ${available}"
+    if [ -n "$line_hint" ]; then
+      # The line is present and the channel shape is what excluded it, so the
+      # newest charts overall would only point away from the real answer.
+      while IFS= read -r l; do
+        [ -n "$l" ] && log_err "$l"
+      done <<<"$line_hint"
+    else
+      available="$(printf '%s\n' "$search" \
+        | grep "^${repo}/rancher[[:space:]]" \
+        | awk '{print $2}' | sort -V | tail -5 | tr '\n' ' ')"
+      [ -n "$available" ] && log_err "newest in ${repo}: ${available}"
+    fi
     [ -n "$why" ] && log_err "$why"
     die "no chart version in ${repo} matches '${tag}'"
   fi

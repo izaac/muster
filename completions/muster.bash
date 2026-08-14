@@ -26,7 +26,7 @@ _muster() {
       return
       ;;
     --channel-source)
-      mapfile -t COMPREPLY < <(compgen -W "fixed metadata" -- "$cur")
+      mapfile -t COMPREPLY < <(compgen -W "fixed metadata prime" -- "$cur")
       return
       ;;
     --out)

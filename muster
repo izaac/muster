@@ -55,15 +55,20 @@ Flags:
                                     rancher-prime|rancher-prime-ga|rancher-latest|
                                     rancher-alpha|rancher-community|rancher-com-rc|
                                     rancher-com-alpha.
-  --channel-source <fixed|metadata> Where the channel and image come from
+  --channel-source <fixed|metadata|prime>
+                                    Where the channel and image come from
                                     (default: fixed). metadata reads the branch
                                     named by --version from the dashboard
                                     branches-metadata.json: its registry key
                                     decides Prime vs Community, the image keeps
                                     the branch head tag, and the chart comes from
-                                    the branch head channel. This is muster
-                                    self-resolving the way the nightly matrix
-                                    should. In metadata mode --repo is ignored.
+                                    the branch head channel. prime takes the
+                                    newest Prime release of the line named by
+                                    --version, from whichever Prime channel holds
+                                    it: the rc in rancher-latest, or the alpha in
+                                    rancher-alpha for a line with no rc yet. Both
+                                    are muster self-resolving the way the nightly
+                                    matrix should. --repo is ignored in either.
   --version <tag>                   Image tag: head or a version like 2.13 /
                                     2.13.4-rc1 (default: head).
   --dry-run                         Resolve and print the chart, image and
@@ -329,8 +334,8 @@ case "$OUT" in
   *) die "unknown --out: $OUT (env|cypress|json)" ;;
 esac
 case "$CHANNEL_SOURCE" in
-  fixed | metadata) ;;
-  *) die "unknown --channel-source: $CHANNEL_SOURCE (fixed|metadata)" ;;
+  fixed | metadata | prime) ;;
+  *) die "unknown --channel-source: $CHANNEL_SOURCE (fixed|metadata|prime)" ;;
 esac
 repo_valid "$RANCHER_REPO" \
   || die "unknown --repo: $RANCHER_REPO ($(repo_keys | tr -s ' ' '|' | sed 's/|$//'))"

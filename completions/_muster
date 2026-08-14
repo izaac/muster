@@ -27,7 +27,7 @@ _muster() {
     '--external[Expose Rancher via a public tunnel]' \
     '--version[Rancher image tag]:tag:' \
     '--repo[Rancher channel]:channel:(rancher-prime rancher-prime-ga rancher-latest rancher-alpha rancher-community rancher-com-rc rancher-com-alpha)' \
-    '--channel-source[Where the channel and image come from]:source:(fixed metadata)' \
+    '--channel-source[Where the channel and image come from]:source:(fixed metadata prime)' \
     '--password[Rancher bootstrap/admin password]:password:' \
     '--image-tag[Install this server image tag against the resolved chart]:tag:' \
     '--out[Handoff format]:format:(env cypress json)' \

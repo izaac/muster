@@ -749,6 +749,51 @@ helm_channel_line_hint() {
     "$vs" "$alt" "$vs"
 }
 
+# helm_resolve_prime - pick the channel for a Prime row, rather than making the
+# caller pick it.
+#
+# A Prime row means "the newest Prime release of this line", and that lives in
+# whichever of the two Prime channels currently has it: an rc in rancher-latest,
+# or, for a line that has not reached rc yet, an alpha in rancher-alpha. Naming
+# one channel by hand is wrong in both directions. Asking rancher-latest for 2.15
+# today fails outright, and asking rancher-alpha for 2.14 quietly installs an
+# alpha when an rc exists. Worse, both answers change as a line progresses, so a
+# job that is correct today breaks or silently downgrades later without anything
+# in it changing.
+#
+# Release, not most recent. rancher-latest also carries commit-named head charts,
+# and for 2.15 those are the freshest thing published, so "newest" by date would
+# pick one. They are deliberately not eligible: a head chart is a new identity on
+# every commit, so a row resolving to one would deploy a different build each run
+# and stop being the fixed input a Prime row exists to be. An alpha stays put
+# until the next alpha. Pinning a head chart is still available for ad-hoc use,
+# with --repo rancher-latest --version <the exact chart>.
+#
+# Rewrites RANCHER_REPO in place and returns, leaving the normal resolution to
+# run against the channel that was chosen.
+helm_resolve_prime() {
+  local tag="${RANCHER_IMAGE_TAG:?RANCHER_IMAGE_TAG is required}"
+  tag_is_bare_minor "$tag" \
+    || die "--channel-source prime needs a release line, such as --version 2.14 (got '$tag')"
+
+  local minor vre pick
+  minor="$(version_string "$tag")"
+  vre="$(printf '%s' "$minor" | sed 's/\./[.]/g')[.]"
+  pick="$(freshness_newest_release "$vre" rancher-latest rancher-alpha)"
+  [ -n "$pick" ] \
+    || die "--channel-source prime: no Prime release for the ${minor} line in rancher-latest or rancher-alpha"
+
+  local ver channel
+  ver="${pick%%|*}"
+  channel="${pick##*|}"
+  RANCHER_REPO="$channel"
+  # The chart is named exactly, so the channel's own shape filter cannot exclude
+  # it: that is what lets an alpha be selected from rancher-alpha and an rc from
+  # rancher-latest through one code path.
+  RANCHER_IMAGE_TAG="$ver"
+  log_info "prime: newest ${minor} release is ${ver} in ${channel} (head builds are not releases)"
+}
+
 # helm_resolve_version - orchestrate the impure resolution against a live helm.
 # Validates RANCHER_REPO, adds/updates the repo, runs the search, and exports:
 #   RANCHER_CHART_URL RANCHER_IMAGE RANCHER_CHART_VERSION RANCHER_IMAGE_TAG_RESOLVED
@@ -757,6 +802,7 @@ helm_resolve_version() {
     helm_resolve_metadata
     return
   fi
+  [ "${CHANNEL_SOURCE:-fixed}" = prime ] && helm_resolve_prime
   freshness_maybe_promote
   local repo="${RANCHER_REPO:?RANCHER_REPO is required}"
   local tag="${RANCHER_IMAGE_TAG:?RANCHER_IMAGE_TAG is required}"

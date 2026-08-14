@@ -1,5 +1,15 @@
 # Self-resolving the nightly matrix
 
+Two self-resolving modes cover the two kinds of row, so a job names only the
+line it wants and never a channel:
+
+| Row kind | Input | Resolves to |
+|---|---|---|
+| head | `--channel-source metadata --version v2.14-head` | the branch head, on whichever registry `branches-metadata.json` names |
+| Prime | `--channel-source prime --version 2.14` | the newest Prime release of the line, from whichever Prime channel holds it |
+
+`--repo` is ignored in both.
+
 `--channel-source metadata` makes muster pick the channel and image itself,
 instead of taking a fixed `--repo`. It reads the branch named by `--version` from
 the dashboard team's
@@ -46,15 +56,39 @@ muster up --dry-run --channel-source metadata --version v2.14-head
 muster up --dry-run --channel-source metadata --version v2.13-head
 ```
 
-The **Prime** rows name the channel explicitly and take the newest release of the
-line (a bare minor). rc (`rancher-latest`) is preferred; a line with no rc yet
-uses alpha (`rancher-alpha`):
+The **Prime** rows take the newest Prime release of a line. Which channel holds
+that changes as a line progresses, so name the line and let muster find it:
 
 ```sh
-muster up --dry-run --repo rancher-latest --version 2.14   # newest rc:    v2.14.4-rc1
-muster up --dry-run --repo rancher-latest --version 2.13   # newest rc:    v2.13.8-rc1
-muster up --dry-run --repo rancher-alpha  --version 2.15   # newest alpha: v2.15.1-alpha1
+muster up --dry-run --channel-source prime --version 2.14   # 2.14.4-rc1     (rancher-latest)
+muster up --dry-run --channel-source prime --version 2.13   # 2.13.8-rc1     (rancher-latest)
+muster up --dry-run --channel-source prime --version 2.15   # 2.15.1-alpha1  (rancher-alpha)
 ```
+
+One command shape for every row. `--repo` is ignored, as in metadata mode.
+
+Naming the channel by hand instead is wrong in both directions, and the wrongness
+moves: `--repo rancher-latest --version 2.15` fails today because that line has
+no rc yet, and `--repo rancher-alpha --version 2.14` quietly installs an alpha
+when an rc exists. Both flip as a line progresses, so a job that is correct today
+breaks or silently downgrades later with nothing in it having changed.
+
+**Release, not most recent.** `rancher-latest` also carries commit-named head
+charts, and for 2.15 those are the freshest thing published:
+
+| channel | newest 2.15 chart | published |
+|---|---|---|
+| `rancher-latest` | `2.15.1-6455c9ca...-head` | 2026-08-14 |
+| `rancher-alpha` | `2.15.1-alpha1` | 2026-08-05 |
+
+`prime:` picks the alpha anyway. A head chart is a new identity on every commit,
+so a row resolving to one would deploy a different build every run, which is the
+property a Prime row exists not to have. An alpha stays put until the next alpha.
+Both are Prime builds; the difference is release versus rolling. To run a head
+build deliberately, pin one: `--repo rancher-latest --version <the exact chart>`.
+
+The ordering is the release ladder, not the calendar: a final release outranks
+its own rc, and an rc outranks an alpha.
 
 A `metadata:` head row deploys from whichever registry the key names, and it
 still reports Community, so `RancherPrime` must not be asserted on it. The

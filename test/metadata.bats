@@ -161,3 +161,121 @@ _resolve() {
   [ "$RANCHER_IMAGE" = "rancher/rancher" ]
   [ "$RANCHER_IMAGE_TAG_RESOLVED" = "pinned" ]
 }
+
+# --- channel-source prime ----------------------------------------------------
+#
+# A Prime row means "the newest Prime release of this line", which lives in
+# whichever Prime channel currently has it: an rc in rancher-latest, or an alpha
+# in rancher-alpha for a line that has not reached rc. Naming one channel by hand
+# is wrong in both directions and changes as a line progresses.
+
+@test "prime picks the rc channel when the line has an rc" {
+  freshness_newest_release() { printf '2.14.4-rc1|2026-07-30|rancher-latest'; }
+  RANCHER_IMAGE_TAG=2.14
+  run helm_resolve_prime
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"newest 2.14 release is 2.14.4-rc1 in rancher-latest"* ]]
+}
+
+@test "prime falls back to the alpha channel for a line with no rc yet" {
+  freshness_newest_release() { printf '2.15.1-alpha1|2026-08-05|rancher-alpha'; }
+  RANCHER_IMAGE_TAG=2.15
+  helm_resolve_prime >/dev/null
+  [ "$RANCHER_REPO" = "rancher-alpha" ]
+  [ "$RANCHER_IMAGE_TAG" = "2.15.1-alpha1" ]
+}
+
+@test "prime rewrites the tag to the exact chart, so no channel filter applies" {
+  freshness_newest_release() { printf '2.15.1-alpha1|2026-08-05|rancher-alpha'; }
+  RANCHER_IMAGE_TAG=2.15
+  helm_resolve_prime >/dev/null
+  # A bare minor would re-select the newest alpha later; the exact version is
+  # what makes the row reproduce the same chart on a re-run.
+  [ "$RANCHER_IMAGE_TAG" = "2.15.1-alpha1" ]
+}
+
+@test "prime asks both Prime channels, in rc-then-alpha order" {
+  local seen="$BATS_TEST_TMPDIR/seen"
+  freshness_newest_release() {
+    shift
+    printf '%s\n' "$*" >"$seen"
+    printf '2.14.4-rc1|2026-07-30|rancher-latest'
+  }
+  RANCHER_IMAGE_TAG=2.14
+  helm_resolve_prime >/dev/null
+  [ "$(cat "$seen")" = "rancher-latest rancher-alpha" ]
+}
+
+@test "prime refuses a version that is not a release line" {
+  RANCHER_IMAGE_TAG=2.14.4-rc1
+  run helm_resolve_prime
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"needs a release line"* ]]
+}
+
+@test "prime refuses a rolling head tag" {
+  RANCHER_IMAGE_TAG=head
+  run helm_resolve_prime
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"needs a release line"* ]]
+}
+
+@test "prime fails clearly when neither channel carries the line" {
+  freshness_newest_release() { printf ''; }
+  RANCHER_IMAGE_TAG=2.99
+  run helm_resolve_prime
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no Prime release for the 2.99 line"* ]]
+}
+
+@test "prime ignores whatever --repo was set to" {
+  freshness_newest_release() { printf '2.15.1-alpha1|2026-08-05|rancher-alpha'; }
+  RANCHER_REPO=rancher-com-rc
+  RANCHER_IMAGE_TAG=2.15
+  helm_resolve_prime >/dev/null
+  [ "$RANCHER_REPO" = "rancher-alpha" ]
+}
+
+@test "prime does not select a head chart, even when it is the freshest thing published" {
+  # rancher-latest carries commit-named head charts for 2.15 that are newer by
+  # date than the alpha. They are a new identity on every commit, so a row
+  # resolving to one would deploy a different build each run.
+  fetch_index_dates() {
+    case "$1" in
+      rancher-latest)
+        printf '%s\n' \
+          '0|2.15.1-6455c9caa998b98d957be801a3a6e3517369f9b7-head|2026-08-14T00:00:00Z' \
+          '0|2.15.1-ac63bee9ca3b5c28dccfdcb1bc9a57bea7624321-head|2026-08-14T00:00:00Z'
+        ;;
+      rancher-alpha) printf '%s\n' '0|2.15.1-alpha1|2026-08-05T00:00:00Z' ;;
+    esac
+  }
+  RANCHER_IMAGE_TAG=2.15
+  helm_resolve_prime >/dev/null
+  [ "$RANCHER_IMAGE_TAG" = "2.15.1-alpha1" ]
+  [ "$RANCHER_REPO" = "rancher-alpha" ]
+}
+
+@test "prime prefers an rc over an alpha published on the same day" {
+  fetch_index_dates() {
+    case "$1" in
+      rancher-latest) printf '%s\n' '0|2.14.4-rc1|2026-07-30T00:00:00Z' ;;
+      rancher-alpha) printf '%s\n' '0|2.14.4-alpha7|2026-07-30T00:00:00Z' ;;
+    esac
+  }
+  RANCHER_IMAGE_TAG=2.14
+  helm_resolve_prime >/dev/null
+  [ "$RANCHER_IMAGE_TAG" = "2.14.4-rc1" ]
+}
+
+@test "prime prefers a final release over its own rc" {
+  fetch_index_dates() {
+    case "$1" in
+      rancher-latest) printf '%s\n' '0|2.13.8-rc1|2026-07-30T00:00:00Z' '1|2.13.8|2026-08-01T00:00:00Z' ;;
+      rancher-alpha) printf '' ;;
+    esac
+  }
+  RANCHER_IMAGE_TAG=2.13
+  helm_resolve_prime >/dev/null
+  [ "$RANCHER_IMAGE_TAG" = "2.13.8" ]
+}

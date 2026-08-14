@@ -59,6 +59,21 @@ helm search repo rancher-latest/rancher --devel --versions --max-col-width=0 \
   | grep -- '-head'
 ```
 
+Pair a chart with a server from a different line only on purpose, and knowing
+what it costs. From 2.16 the chart is not just a set of tags: the system charts
+moved out of the server image into `rancher-assets`, which the chart copies in
+with a `rancher-charts-copy` initContainer.
+
+| | 2.15 chart | 2.16 chart |
+|---|---|---|
+| `rancher-charts-copy` initContainer | no | yes |
+| `CATTLE_CHARTS_IMAGE` | unset | set |
+
+So a 2.15 chart against a 2.16 server produces a Rancher with no system charts
+to install, and it still reports `RancherPrime: true`, which is the worst shape
+of a wrong result: it looks like a valid Prime 2.16 run. Use the matching chart
+unless reproducing that skew is the point of the test.
+
 `rancher-alpha` carries no head charts, only alphas. On that channel
 `--version head` resolves the newest alpha rather than a head build, and
 `--image-tag` is the way to run a head server against it:

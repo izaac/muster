@@ -29,7 +29,14 @@ _MUSTER_MIRROR_SH=1
 # The server and the local cluster it runs. Rancher installs these itself on
 # first start, so a missing one is not an install failure but a controller that
 # never becomes ready.
-MUSTER_MIRROR_SERVER_FAMILIES="rancher rancher-agent shell rancher-webhook fleet fleet-agent gitjob helmop system-agent system-upgrade-controller kuberlr-kubectl ui-plugin-catalog remotedialer-proxy scc-operator turtles cluster-api-controller kubectl"
+#
+# rancher-assets is the exception, and the reason it is listed here. From 2.16
+# the bundled system charts live in that image rather than in the server image,
+# and the chart copies them in with a rancher-charts-copy initContainer, so the
+# server pod cannot start at all without it. That failure lands before the first
+# readiness gate, which is a plain rollout wait rather than a retry, so the pull
+# healing cannot reach it either.
+MUSTER_MIRROR_SERVER_FAMILIES="rancher rancher-agent rancher-assets shell rancher-webhook fleet fleet-agent gitjob helmop system-agent system-upgrade-controller kuberlr-kubectl ui-plugin-catalog remotedialer-proxy scc-operator turtles cluster-api-controller kubectl"
 
 # Provisioning a k3s cluster: the installer image system-agent fetches, the node
 # driver, and the images k3s itself starts on a new node.
@@ -49,14 +56,39 @@ MUSTER_MIRROR_CERT_MANAGER_CHART="quay.io/jetstack/charts/cert-manager"
 # mirror_list_candidates <chart_version> - image-list URLs to try, best first.
 #
 # A pre-release has no list of its own, so fall back to the release it is built
-# from and then to that line's first release. The list only supplies supporting
-# images; the server image is mirrored separately from what actually resolved.
+# from and then to that line's first release. A line that has not released at all
+# has no list anywhere: 2.16 today publishes head builds while v2.16.0 does not
+# exist, and without a further fallback the mirror could not be filled for it. So
+# keep walking back a couple of minors, whose list names the same families at
+# slightly older tags, which is a working starting point rather than nothing.
+#
+# The list only supplies supporting images. The server image, its agent and the
+# cert-manager chart are mirrored from what actually resolved, and anything the
+# older list names at a stale tag is corrected by the pull healing during `up` or
+# by `mirror --from-cluster`.
+#
+# Candidates are only ever appended, and the first that resolves wins, so every
+# chart that found a list before finds the same one.
 mirror_list_candidates() {
-  local v="${1:?chart version required}" base minor
+  local v="${1:?chart version required}" base minor major min_n
   base="${v%%-*}"
   minor="$(printf '%s' "$base" | cut -d. -f1,2)"
-  local ver
-  for ver in "$base" "${minor}.0"; do
+  major="${minor%%.*}"
+  min_n="${minor##*.}"
+
+  local ver seen=""
+  for ver in "$base" "${minor}.0" \
+    "${major}.$((min_n - 1)).0" "${major}.$((min_n - 2)).0"; do
+    case "$ver" in
+      *-*) continue ;;
+    esac
+    # A minor below zero is not a version, and the same candidate twice is only
+    # two more requests that cannot succeed.
+    [ "${ver#"${major}."}" = "${ver}" ] && continue
+    case " $seen " in
+      *" $ver "*) continue ;;
+    esac
+    seen="$seen $ver"
     printf 'https://prime.ribs.rancher.io/rancher/v%s/rancher-images.txt\n' "$ver"
     printf 'https://github.com/rancher/rancher/releases/download/v%s/rancher-images.txt\n' "$ver"
   done
@@ -97,6 +129,29 @@ mirror_cert_manager_images() {
   helm template cert-manager jetstack/cert-manager --version "$ver" \
     --set installCRDs=true 2>/dev/null \
     | grep -oE 'image: *"?[^"]*' | sed 's/image: *"*//' | sort -u
+}
+
+# mirror_chart_images - the images the resolved rancher chart itself references,
+# on stdout, one per line.
+#
+# The published image list belongs to a release and names families at that
+# release's tags. It cannot describe a component the chart carries its own tag
+# for, and from 2.16 the chart does exactly that: rancher-assets is pinned to a
+# datestamped build (v2.16-20260805T1815Z-dev) that no list mentions, and the
+# server pod will not start without it because an initContainer copies the
+# system charts out of that image.
+#
+# Rendering the chart is the only authoritative answer, and it keeps working for
+# whatever the next such component turns out to be.
+#
+# Best effort: a chart that cannot be rendered yields nothing rather than failing
+# the mirror, and the gap then shows up as a named 404.
+mirror_chart_images() {
+  local repo="${RANCHER_REPO:-}" ver="${RANCHER_CHART_VERSION:-}"
+  [ -n "$repo" ] && [ -n "$ver" ] || return 0
+  command -v helm >/dev/null 2>&1 || return 0
+  helm template rancher "${repo}/rancher" --version "$ver" 2>/dev/null \
+    | grep -oE 'image: *"?[^"]+' | sed 's/image: *"*//' | sort -u
 }
 
 # mirror_source_ref <image_ref> <source_registry> - where to pull a bare
@@ -164,6 +219,11 @@ mirror_plan() {
     local server_img="${RANCHER_IMAGE:-rancher/rancher}"
     printf '%s/rancher-agent:%s\n' "${server_img%/*}" "$RANCHER_IMAGE_TAG_RESOLVED"
     printf '%s\n' "$core"
+    # What the chart itself pins, which is the only place a component carrying
+    # its own tag appears: from 2.16 the system charts ship in rancher-assets at
+    # a datestamped tag no image list names, and the server cannot start without
+    # it.
+    mirror_chart_images
     # What the node's own k3s starts. Not in a Rancher image list at the tags the
     # running node uses, so take them from the k3s release itself.
     mirror_k3s_release_images "$(mirror_k3s_tag)"

@@ -119,12 +119,26 @@ complete:
 |---|---|---|
 | The release's `rancher-images.txt` | Rancher's own components | Belongs to a release, so it is wrong about a prerelease |
 | The resolved server tag | `rancher/rancher` and `rancher-agent` | The list names the agent only at its GA tag |
+| The rancher chart, rendered | a component the chart pins its own tag for, such as `rancher-assets` | No list can name a tag that belongs to the chart rather than the release |
 | The k3s release's `k3s-images.txt` | CoreDNS, traefik, metrics-server, local-path-provisioner, klipper, pause | These are k3s's, not Rancher's, and the node runs its own k3s version |
 | The cert-manager chart, rendered | cert-manager and its CRDs | Rancher requires it but does not ship it |
 
 The Rancher list is looked up as `prime.ribs.rancher.io` first and the GitHub
 release second, falling back from the exact version to the line's `.0` release,
-because a prerelease publishes no list of its own.
+because a prerelease publishes no list of its own. A line that has not released
+at all has no list anywhere, so the fallback keeps walking back a couple of
+minors: 2.16 publishes head builds today while `v2.16.0` does not exist, and
+without that the mirror could not be filled for it. An older list names the same
+families at slightly older tags, which is a starting point rather than nothing,
+and the healing described below corrects the rest.
+
+`rancher-assets` is the reason the chart is rendered rather than trusted to the
+list. From 2.16 the bundled system charts live in that image instead of the
+server image, and the chart copies them in with a `rancher-charts-copy`
+initContainer pinned to a datestamped build (`v2.16-20260805T1815Z-dev`) that no
+image list mentions. Miss it and the server pod never starts, which happens
+before the first readiness gate; that gate is a plain rollout wait rather than a
+retry, so the pull healing cannot rescue it either.
 
 The k3s entry is the one that is easy to miss. A Rancher release list does name
 CoreDNS and traefik, but at the tags Rancher's own bundled k3s uses, which is not

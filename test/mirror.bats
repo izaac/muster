@@ -200,3 +200,88 @@ setup() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"could not be copied"* ]]
 }
+
+# --- image-list fallback for a line that has not released ---------------------
+
+@test "mirror_list_candidates keeps the release's own list first" {
+  run mirror_list_candidates 2.14.4-rc1
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | head -1)" = "https://prime.ribs.rancher.io/rancher/v2.14.4/rancher-images.txt" ]
+}
+
+@test "mirror_list_candidates walks back a minor when the line has no release" {
+  # 2.16 publishes head builds while v2.16.0 does not exist, so without this the
+  # mirror could not be filled for it at all.
+  run mirror_list_candidates 2.16.0-abc-head
+  [[ "$output" == *"/v2.16.0/rancher-images.txt"* ]]
+  [[ "$output" == *"/v2.15.0/rancher-images.txt"* ]]
+  [[ "$output" == *"/v2.14.0/rancher-images.txt"* ]]
+}
+
+@test "mirror_list_candidates never emits the same candidate twice" {
+  run mirror_list_candidates 2.16.0
+  local dupes
+  dupes="$(printf '%s\n' "$output" | sort | uniq -d)"
+  [ -z "$dupes" ]
+}
+
+@test "mirror_list_candidates does not walk below the start of a major" {
+  run mirror_list_candidates 2.1.0
+  [[ "$output" != *"v2.-1.0"* ]]
+  [[ "$output" != *"v2.0.0"* ]] || true
+  # Every candidate is a real version triple.
+  while IFS= read -r u; do
+    [ -n "$u" ] || continue
+    [[ "$u" =~ /v[0-9]+\.[0-9]+\.[0-9]+/ ]]
+  done <<<"$output"
+}
+
+# --- images the chart pins itself --------------------------------------------
+
+@test "mirror_chart_images reports what the chart renders" {
+  RANCHER_REPO=rancher-latest
+  RANCHER_CHART_VERSION=2.16.0-abc-head
+  helm() {
+    printf '%s\n' \
+      '        image: "stgregistry.suse.com/rancher/rancher-assets:v2.16-20260805T1815Z-dev"' \
+      '        image: "stgregistry.suse.com/rancher/rancher:v2.16.0-abc-head"'
+  }
+  run mirror_chart_images
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qx "stgregistry.suse.com/rancher/rancher-assets:v2.16-20260805T1815Z-dev"
+}
+
+@test "mirror_chart_images yields nothing when the chart is not resolved" {
+  RANCHER_REPO=""
+  RANCHER_CHART_VERSION=""
+  run mirror_chart_images
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "mirror_chart_images yields nothing rather than failing when helm cannot render" {
+  RANCHER_REPO=rancher-latest
+  RANCHER_CHART_VERSION=2.16.0-abc-head
+  helm() { return 1; }
+  run mirror_chart_images
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "mirror_plan carries a component the chart pins but no image list names" {
+  # From 2.16 the system charts ship in rancher-assets at a datestamped tag, and
+  # the server pod cannot start without it, so a mirror that misses it fails
+  # before the first readiness gate.
+  mirror_chart_images() {
+    printf '%s\n' 'stgregistry.suse.com/rancher/rancher-assets:v2.16-20260805T1815Z-dev'
+  }
+  run mirror_plan
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qx "stgregistry.suse.com/rancher/rancher-assets:v2.16-20260805T1815Z-dev"
+}
+
+@test "rancher-assets survives the core family filter" {
+  run bash -c "printf '%s\n' 'rancher/rancher-assets:v2.16-x-dev' 'rancher/unrelated:v1' | { $(declare -f mirror_filter_core); MUSTER_MIRROR_CORE_FAMILIES='$MUSTER_MIRROR_CORE_FAMILIES'; mirror_filter_core; }"
+  echo "$output" | grep -qx "rancher/rancher-assets:v2.16-x-dev"
+  ! echo "$output" | grep -q "unrelated"
+}

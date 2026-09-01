@@ -1014,15 +1014,23 @@ helm_resolve_prime() {
     die "--channel-source prime: no Prime release for the ${minor} line in rancher-latest or rancher-alpha"
   fi
 
-  local ver channel
+  local ver channel date rest
   ver="${pick%%|*}"
+  rest="${pick#*|}"
+  date="${rest%%|*}"
   channel="${pick##*|}"
   RANCHER_REPO="$channel"
   # The chart is named exactly, so the channel's own shape filter cannot exclude
   # it: that is what lets an alpha be selected from rancher-alpha and an rc from
   # rancher-latest through one code path.
   RANCHER_IMAGE_TAG="$ver"
-  log_info "prime: newest ${minor} release is ${ver} in ${channel} (head builds are not releases)"
+  # When the release was published, which is the only thing a caller needs to
+  # decide whether the row is worth running: a Prime row whose newest release has
+  # gone quiet is testing a line that has stopped. Exported rather than only
+  # logged so a job can read it instead of parsing output.
+  RANCHER_CHART_RELEASED="$date"
+  export RANCHER_CHART_RELEASED
+  log_info "prime: newest ${minor} release is ${ver} in ${channel}, published ${date} (head builds are not releases)"
 }
 
 # helm_resolve_version - orchestrate the impure resolution against a live helm.

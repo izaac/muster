@@ -13,6 +13,19 @@ _MUSTER_PLAN_SH=1
 # plan_row <label> <value> - one aligned line of the report.
 plan_row() { printf '  %-16s %s\n' "$1" "$2" >&2; }
 
+# plan_age <date> <today> - a date with its age in days, or the date alone when
+# the two cannot be compared. Deterministic given its arguments.
+plan_age() {
+  local d="${1:?date required}" today="${2:?today required}" de te
+  de="$(_date_epoch "$d" 2>/dev/null)" || de=""
+  te="$(_date_epoch "$today" 2>/dev/null)" || te=""
+  if [ -z "$de" ] || [ -z "$te" ]; then
+    printf '%s' "$d"
+    return 0
+  fi
+  printf '%s  (%s days ago)' "$d" "$(((te - de) / 86400))"
+}
+
 # plan_report - print the resolved plan for the current flags.
 #
 # Runs the same resolution the install does, so what it prints is what a real
@@ -36,6 +49,14 @@ plan_report() {
   plan_row "chart repo" "$RANCHER_CHART_URL"
   plan_row "chart version" "$RANCHER_CHART_VERSION"
   plan_row image "${image}:${tag}"
+
+  # For a Prime row, how long ago the release was published is what decides
+  # whether the row is worth running at all: a line whose newest release has gone
+  # quiet is not being developed, and a job that keeps running it reports on
+  # nothing. Days are given so the caller does not have to work them out.
+  if [ -n "${RANCHER_CHART_RELEASED:-}" ]; then
+    plan_row released "$(plan_age "$RANCHER_CHART_RELEASED" "$(today)")"
+  fi
 
   flavour="$(image_prime_flavour "$image" "$tag")"
   case "$flavour" in

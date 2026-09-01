@@ -430,3 +430,36 @@ _resolve() {
   [ "$RANCHER_IMAGE" = "stgregistry.suse.com/rancher/rancher" ]
   [ "$RANCHER_IMAGE_TAG_RESOLVED" = "v2.13-head" ]
 }
+
+# --- a Prime row reports how old its release is ------------------------------
+#
+# The parent job drops a Prime row whose newest release has gone quiet, so it
+# needs the date. Exported rather than only logged, so a job reads a variable
+# instead of parsing output.
+
+@test "prime exports the publication date of the release it picked" {
+  freshness_newest_release() { printf '2.14.5-rc2|2026-08-28|rancher-latest'; }
+  RANCHER_IMAGE_TAG=2.14
+  unset RANCHER_CHART_RELEASED
+  helm_resolve_prime >/dev/null
+  [ "$RANCHER_CHART_RELEASED" = "2026-08-28" ]
+  [ "$RANCHER_IMAGE_TAG" = "2.14.5-rc2" ]
+}
+
+@test "prime names the publication date in its log line" {
+  freshness_newest_release() { printf '2.13.9-rc2|2026-08-28|rancher-latest'; }
+  RANCHER_IMAGE_TAG=2.13
+  run helm_resolve_prime
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"published 2026-08-28"* ]]
+}
+
+@test "plan_age gives the date and its age in days" {
+  . "$ROOT/lib/plan.sh"
+  [ "$(plan_age 2026-08-28 2026-09-01)" = "2026-08-28  (4 days ago)" ]
+}
+
+@test "plan_age falls back to the bare date when it cannot be parsed" {
+  . "$ROOT/lib/plan.sh"
+  [ "$(plan_age not-a-date 2026-09-01)" = "not-a-date" ]
+}

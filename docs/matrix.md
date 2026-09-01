@@ -90,6 +90,17 @@ build deliberately, pin one: `--repo rancher-latest --version <the exact chart>`
 The ordering is the release ladder, not the calendar: a final release outranks
 its own rc, and an rc outranks an alpha.
 
+A line that has not released at all has no Prime row yet. muster says which
+charts it does carry, so the choice is visible rather than a dead end:
+
+```
+$ muster up --dry-run --channel-source prime --version 2.16
+[muster] ERROR the 2.16 line is in rancher-latest but has no release yet;
+         its newest head charts are: 2.16.0-9a46e2a-head 2.16.0-23449b8-head ...
+[muster] ERROR a Prime row takes a release, so pin a head chart on purpose:
+         --repo rancher-latest --version <one of the above>
+```
+
 A `metadata:` head row deploys from whichever registry the key names, and it
 still reports Community, so `RancherPrime` must not be asserted on it. The
 reason is narrower than "head builds are Community", because two different tags

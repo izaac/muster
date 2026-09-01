@@ -279,3 +279,72 @@ _resolve() {
   helm_resolve_prime >/dev/null
   [ "$RANCHER_IMAGE_TAG" = "2.13.8" ]
 }
+
+# --- a Prime row for a line that has not released ----------------------------
+#
+# 2.16 today carries only commit-named head charts. A Prime row will not resolve
+# to one, because the row would deploy a different build every run, so the error
+# has to name what the line does carry instead of stopping at "nothing matched".
+
+@test "newest_head_versions takes the newest head charts by publication date" {
+  out="$(printf '%s\n' \
+    '0|2.16.0-aaa-head|2026-08-20T00:00:00Z' \
+    '0|2.16.0-bbb-head|2026-09-01T00:00:00Z' \
+    '0|2.16.0-ccc-head|2026-08-25T00:00:00Z' \
+    '0|2.16.0-ddd-head|2026-07-01T00:00:00Z' \
+    | newest_head_versions '2[.]16[.]' 3)"
+  [ "$out" = "$(printf '2.16.0-bbb-head\n2.16.0-ccc-head\n2.16.0-aaa-head')" ]
+}
+
+@test "newest_head_versions ignores releases and other lines" {
+  out="$(printf '%s\n' \
+    '0|2.16.0-aaa-head|2026-09-01T00:00:00Z' \
+    '0|2.16.0-rc1|2026-09-01T00:00:00Z' \
+    '0|2.15.2-zzz-head|2026-09-01T00:00:00Z' \
+    | newest_head_versions '2[.]16[.]' 3)"
+  [ "$out" = "2.16.0-aaa-head" ]
+}
+
+@test "newest_head_versions is empty when the line carries no head chart" {
+  run newest_head_versions '2[.]16[.]' 3 <<<'1|2.14.4|2026-07-30T00:00:00Z'
+  [ -z "$output" ]
+}
+
+@test "helm_prime_head_hint names the head charts and how to pin one" {
+  fetch_index_dates() {
+    case "$1" in
+      rancher-latest) printf '%s\n' \
+        '0|2.16.0-b29c3a6-head|2026-09-01T00:00:00Z' \
+        '0|2.16.0-ff28ae6-head|2026-08-30T00:00:00Z' ;;
+      *) printf '' ;;
+    esac
+  }
+  run helm_prime_head_hint 2.16 '2[.]16[.]' rancher-latest rancher-alpha
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"the 2.16 line is in rancher-latest but has no release yet"* ]]
+  [[ "$output" == *"2.16.0-b29c3a6-head"* ]]
+  [[ "$output" == *"--repo rancher-latest --version"* ]]
+}
+
+@test "helm_prime_head_hint says nothing when the line is absent everywhere" {
+  fetch_index_dates() { printf ''; }
+  run helm_prime_head_hint 2.99 '2[.]99[.]' rancher-latest rancher-alpha
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "prime points at the head charts when the line has no release" {
+  freshness_newest_release() { printf ''; }
+  fetch_index_dates() {
+    case "$1" in
+      rancher-latest) printf '%s\n' '0|2.16.0-b29c3a6-head|2026-09-01T00:00:00Z' ;;
+      *) printf '' ;;
+    esac
+  }
+  RANCHER_IMAGE_TAG=2.16
+  run helm_resolve_prime
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"has no release yet"* ]]
+  [[ "$output" == *"2.16.0-b29c3a6-head"* ]]
+  [[ "$output" == *"no Prime release for the 2.16 line"* ]]
+}

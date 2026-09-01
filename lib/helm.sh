@@ -554,6 +554,22 @@ newest_release_version() {
     | awk -F'\t' '{ d=$3; sub(/T.*/, "", d); print $2 "|" d }'
 }
 
+# newest_head_versions <version_regex> <n> - the newest <n> head charts matching
+# the regex, read as "stab|version|created" rows on stdin, newest first. Pure.
+#
+# The counterpart to newest_release_version: those are what a Prime row resolves
+# to, these are what it deliberately will not, and naming them is what turns "no
+# release" from a dead end into a choice. Ordered by publication date, because a
+# commit-named chart carries no ordering of its own.
+newest_head_versions() {
+  local vre="$1" n="${2:-3}" rows
+  rows="$(grep -E "^[01][|]${vre}" | grep -- '-head' || true)"
+  [ -n "$rows" ] || return 0
+  printf '%s\n' "$rows" \
+    | awk -F'|' '{ print $3 "\t" $2 }' \
+    | sort -r | head -"$n" | awk -F'\t' '{ print $2 }'
+}
+
 # version_ahead <a> <b> - true when version a is strictly newer than b. Uses
 # sort -V, but first rewrites the pre-release separator "-" to "~" so a final
 # release outranks its own pre-releases (2.14.4 is newer than 2.14.4-rc1) and an
@@ -821,6 +837,30 @@ helm_channel_line_hint() {
     "$vs" "$alt" "$vs"
 }
 
+# helm_prime_head_hint <minor> <version_regex> <channel...> - explain a line that
+# is published but carries no release, on stdout, or nothing.
+#
+# 2.16 today is exactly this: thirty-six commit-named head charts in
+# rancher-latest and no rc or alpha at all. A Prime row cannot resolve to one,
+# because a head chart is a new identity on every commit and the row would deploy
+# a different build every run, so say what the line does carry and how to pin one
+# on purpose rather than only that nothing matched. Impure: reads each index.
+helm_prime_head_hint() {
+  local minor="${1:?minor required}" vre="${2:?version regex required}"
+  shift 2
+  local ch heads found=""
+  for ch in "$@"; do
+    heads="$(fetch_index_dates "$ch" 2>/dev/null | newest_head_versions "$vre" 3 || true)"
+    [ -n "$heads" ] || continue
+    printf 'the %s line is in %s but has no release yet; its newest head charts are: %s\n' \
+      "$minor" "$ch" "$(printf '%s\n' "$heads" | tr '\n' ' ')"
+    [ -n "$found" ] || found="$ch"
+  done
+  [ -n "$found" ] || return 0
+  printf 'a Prime row takes a release, so pin a head chart on purpose: --repo %s --version <one of the above>\n' \
+    "$found"
+}
+
 # helm_resolve_prime - pick the channel for a Prime row, rather than making the
 # caller pick it.
 #
@@ -852,8 +892,13 @@ helm_resolve_prime() {
   minor="$(version_string "$tag")"
   vre="$(printf '%s' "$minor" | sed 's/\./[.]/g')[.]"
   pick="$(freshness_newest_release "$vre" rancher-latest rancher-alpha)"
-  [ -n "$pick" ] \
-    || die "--channel-source prime: no Prime release for the ${minor} line in rancher-latest or rancher-alpha"
+  if [ -z "$pick" ]; then
+    local hint
+    while IFS= read -r hint; do
+      [ -n "$hint" ] && log_err "$hint"
+    done < <(helm_prime_head_hint "$minor" "$vre" rancher-latest rancher-alpha)
+    die "--channel-source prime: no Prime release for the ${minor} line in rancher-latest or rancher-alpha"
+  fi
 
   local ver channel
   ver="${pick%%|*}"

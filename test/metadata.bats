@@ -101,7 +101,11 @@ JSON
 _resolve() {
   branches_fetch() { printf '%s' "$FIXTURE"; }
   helm_verify_image() { :; }
+  helm_check_chart_line() { :; }
   require_cmd() { :; }
+  # The image states its own chart line; the fixtures below set it per branch.
+  image_chart_line() { printf '%s' "${STUB_IMAGE_LINE:-}"; }
+  fetch_index_dates_url() { printf '%s' "${STUB_LINE_INDEX:-}"; }
   helm() {
     case "$1 ${2:-}" in
       "search repo")
@@ -146,7 +150,10 @@ _resolve() {
   RANCHER_IMAGE_TAG_OVERRIDE="rancher/rancher:pinned"
   branches_fetch() { printf '%s' "$FIXTURE"; }
   helm_verify_image() { :; }
+  helm_check_chart_line() { :; }
   require_cmd() { :; }
+  image_chart_line() { printf ''; }
+  fetch_index_dates_url() { printf ''; }
   helm() {
     case "$1 ${2:-}" in
       "search repo")
@@ -347,4 +354,79 @@ _resolve() {
   [[ "$output" == *"has no release yet"* ]]
   [[ "$output" == *"2.16.0-b29c3a6-head"* ]]
   [[ "$output" == *"no Prime release for the 2.16 line"* ]]
+}
+
+# --- muster decides the chart line, the metadata is the input ----------------
+#
+# The two namespaces cannot line up. A chart channel is always release-X.Y, while
+# the dashboard's top branch is called master, so there is no server-charts/master
+# to derive and the helm.repo-url key for master has to point somewhere else. It
+# currently points at release-2.15 while rancher/rancher:head is dev-v2.16. The
+# image states its own line, so take it from there.
+
+@test "metadata_line_chart_url names the line, not the branch" {
+  [ "$(metadata_line_chart_url 2.16)" = "https://charts.optimus.rancher.io/server-charts/release-2.16" ]
+}
+
+@test "the image's chart line wins over a key pointing at another line" {
+  image_chart_line() { printf '2.16'; }
+  fetch_index_dates_url() { printf '0|2.16-abc-head|2026-09-01T00:00:00Z'; }
+  run metadata_decide_chart_url rancher/rancher head \
+    https://charts.optimus.rancher.io/server-charts/release-2.15
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"server-charts/release-2.16" ]]
+}
+
+@test "the key is kept when it already names the image's line" {
+  image_chart_line() { printf '2.14'; }
+  fetch_index_dates_url() { printf 'should not be consulted'; }
+  run metadata_decide_chart_url stg/rancher v2.14-head \
+    https://charts.optimus.rancher.io/server-charts/release-2.14
+  [ "$output" = "https://charts.optimus.rancher.io/server-charts/release-2.14" ]
+}
+
+@test "the key is kept when the image cannot be read" {
+  image_chart_line() { printf ''; }
+  run metadata_decide_chart_url rancher/rancher head \
+    https://charts.optimus.rancher.io/server-charts/release-2.15
+  [ "$output" = "https://charts.optimus.rancher.io/server-charts/release-2.15" ]
+}
+
+@test "the key is kept when the image's line has no chart channel yet" {
+  # After 2.17 opens on master, release-2.17 does not exist on day one.
+  image_chart_line() { printf '2.17'; }
+  fetch_index_dates_url() { printf ''; }
+  run metadata_decide_chart_url rancher/rancher head \
+    https://charts.optimus.rancher.io/server-charts/release-2.15
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"server-charts/release-2.15" ]]
+  [[ "$output" == *"has no chart; keeping release-2.15"* ]]
+}
+
+@test "MUSTER_CHART_LINE=metadata keeps the key unconditionally" {
+  image_chart_line() { printf '2.16'; }
+  fetch_index_dates_url() { printf '0|2.16-abc-head|2026-09-01T00:00:00Z'; }
+  MUSTER_CHART_LINE=metadata run metadata_decide_chart_url rancher/rancher head \
+    https://charts.optimus.rancher.io/server-charts/release-2.15
+  [ "$output" = "https://charts.optimus.rancher.io/server-charts/release-2.15" ]
+}
+
+@test "the master row resolves against the chart line its image is built from" {
+  STUB_IMAGE_LINE=2.16
+  STUB_LINE_INDEX='0|2.16-abc-head|2026-09-01T00:00:00Z'
+  _resolve head
+  [ "$RANCHER_CHART_URL" = "https://charts.optimus.rancher.io/server-charts/release-2.16" ]
+  [ "$RANCHER_IMAGE" = "rancher/rancher" ]
+  [ "$RANCHER_IMAGE_TAG_RESOLVED" = "head" ]
+  # The helm repo alias follows the channel, so a log line names what was used.
+  [ "$RANCHER_REPO" = "muster-metadata-release-2.16" ]
+}
+
+@test "a release-branch row is unchanged by the decision" {
+  STUB_IMAGE_LINE=2.13
+  STUB_LINE_INDEX='0|2.13-abc-head|2026-09-01T00:00:00Z'
+  _resolve v2.13-head
+  [ "$RANCHER_CHART_URL" = "https://charts.optimus.rancher.io/server-charts/release-2.13" ]
+  [ "$RANCHER_IMAGE" = "stgregistry.suse.com/rancher/rancher" ]
+  [ "$RANCHER_IMAGE_TAG_RESOLVED" = "v2.13-head" ]
 }

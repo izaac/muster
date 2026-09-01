@@ -777,6 +777,54 @@ metadata_pick_chart() {
   resolve_head_pick "$top" "$dates"
 }
 
+# metadata_decide_chart_url <image> <tag> <metadata_url> - the chart channel to
+# actually use, on stdout.
+#
+# The metadata is the input, not the last word. muster owns the final decision,
+# because the thing being tested is the image and what it bundles, and the image
+# states its own chart line in CATTLE_CHART_DEFAULT_BRANCH.
+#
+# They disagree today for master. The key points at server-charts/release-2.15
+# while rancher/rancher:head is built from dev-v2.16, and it has to point
+# somewhere, because there is no server-charts/master to derive: chart channels
+# are always release-X.Y while the dashboard's top branch is called master. So
+# the key is a workaround for a naming mismatch and not a statement that a 2.15
+# chart is wanted. Taking the line from the image resolves it without needing
+# anything changed upstream, and keeps holding when 2.17 opens and master moves.
+#
+# Conservative in both directions: the key is kept when the image cannot be read,
+# when the two already agree, or when the line's own channel carries no chart.
+# MUSTER_CHART_LINE=metadata keeps the key unconditionally, which is how to
+# reproduce what the dashboard's own CI deploys.
+metadata_decide_chart_url() {
+  local image="${1:?image required}" tag="${2:?tag required}" url_meta="${3:?url required}"
+  if [ "${MUSTER_CHART_LINE:-image}" = metadata ]; then
+    printf '%s' "$url_meta"
+    return 0
+  fi
+
+  local iline url_line
+  iline="$(image_chart_line "$image" "$tag")"
+  if [ -z "$iline" ]; then
+    printf '%s' "$url_meta"
+    return 0
+  fi
+  url_line="$(metadata_line_chart_url "$iline")"
+  if [ "$url_line" = "$url_meta" ]; then
+    printf '%s' "$url_meta"
+    return 0
+  fi
+
+  if [ -z "$(fetch_index_dates_url "$url_line" 2>/dev/null || true)" ]; then
+    log_warn "metadata: the image is on the ${iline} line but ${url_line##*/} has no chart; keeping ${url_meta##*/}"
+    printf '%s' "$url_meta"
+    return 0
+  fi
+
+  log_info "metadata: chart line ${iline} taken from the image (${url_line##*/}), not the helm.repo-url key (${url_meta##*/})"
+  printf '%s' "$url_line"
+}
+
 # helm_resolve_metadata - resolve the server image, chart and tag from the
 # dashboard's branches-metadata.json for the branch that RANCHER_IMAGE_TAG names.
 #
@@ -805,8 +853,10 @@ helm_resolve_metadata() {
   [ -n "$img" ] || die "channel-source metadata: branch '$branch' has no rancher-image in the metadata"
   [ -n "$itag" ] || itag="$tag"
 
-  url="$(metadata_chart_url "$branch" "$helmurl")"
-  repo="muster-metadata-${branch}"
+  local url_meta
+  url_meta="$(metadata_chart_url "$branch" "$helmurl")"
+  url="$(metadata_decide_chart_url "$img" "$itag" "$url_meta")"
+  repo="muster-metadata-${url##*/}"
   require_cmd helm
   retry 3 5 "helm repo add $repo" -- helm repo add "$repo" "$url" --force-update
   retry 3 5 "helm repo update" -- helm repo update "$repo"

@@ -133,3 +133,16 @@ metadata_chart_url() {
   fi
   printf 'https://charts.optimus.rancher.io/server-charts/%s' "$branch"
 }
+
+# metadata_line_chart_url <line> - the optimus channel carrying a release line's
+# head chart. Pure.
+#
+# The two namespaces do not line up, and cannot. A chart channel is always
+# release-X.Y, while the dashboard's top branch is called master, so there is no
+# server-charts/master to derive and there never will be: when 2.17 opens, master
+# becomes 2.17 and release-2.16 turns into a real dashboard branch, but the chart
+# channel for whatever master is stays release-<that line>. Naming the line
+# directly is the only mapping that holds on both sides of that.
+metadata_line_chart_url() {
+  printf 'https://charts.optimus.rancher.io/server-charts/release-%s' "${1:?line required}"
+}

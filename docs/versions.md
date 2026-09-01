@@ -74,6 +74,21 @@ to install, and it still reports `RancherPrime: true`, which is the worst shape
 of a wrong result: it looks like a valid Prime 2.16 run. Use the matching chart
 unless reproducing that skew is the point of the test.
 
+muster says so when it happens. The line a server runs is in its own config
+(`CATTLE_CHART_DEFAULT_BRANCH`), so it is compared against the chart's line at
+resolve time:
+
+```
+[muster] WARN chart 2.15-842907d3...-head is on the 2.15 line but the server
+         carries the 2.16 chart catalog
+[muster] WARN components follow the chart and system charts follow the server;
+         use the 2.16 chart unless the skew is the point
+```
+
+It is a warning, not a failure, because the pairing is sometimes deliberate.
+Online the server falls back to cloning `rancher/charts` and the skew is easy to
+miss; airgapped there is nothing to clone.
+
 `rancher-alpha` carries no head charts, only alphas. On that channel
 `--version head` resolves the newest alpha rather than a head build, and
 `--image-tag` is the way to run a head server against it:

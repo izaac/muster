@@ -436,6 +436,77 @@ helm_verify_image() {
   Set MUSTER_SKIP_IMAGE_CHECK=1 to install anyway."
 }
 
+# --- chart / server line skew ------------------------------------------------
+# A chart and a server image are versioned separately and can be paired freely,
+# which is useful on purpose and damaging by accident. Neither version string
+# states the pairing, because a head chart and a head image name their line
+# differently, so read the line the server actually carries and compare.
+
+# chart_release_line <chart_version> - the X.Y line a chart belongs to, on
+# stdout, or nothing for a version that names no line. Pure. Covers both head
+# chart shapes: 2.16.0-<sha>-head, the release team's scheme with the patch, and
+# 2.15-<sha>-head, the per-branch one.
+chart_release_line() {
+  local v="${1:-}"
+  v="${v%%-*}"
+  v="${v#v}"
+  case "$v" in
+    [0-9]*.[0-9]*) printf '%s' "$v" | cut -d. -f1,2 ;;
+  esac
+}
+
+# image_chart_line <image> <tag> - the X.Y line of the chart catalog a server
+# runs, read from CATTLE_CHART_DEFAULT_BRANCH in its config, on stdout.
+#
+# A server does not take its system charts from the chart that deployed it. It
+# clones rancher/charts at this branch, or from 2.16 reads them out of the
+# rancher-assets image. Either way this value is the line the server behaves as,
+# and the only place that line is stated.
+image_chart_line() {
+  local b
+  command -v image_env >/dev/null 2>&1 || return 0
+  b="$(image_env "${1:?image required}" "${2:?tag required}" CATTLE_CHART_DEFAULT_BRANCH)"
+  case "$b" in
+    dev-v[0-9]*.[0-9]* | release-v[0-9]*.[0-9]*) printf '%s' "${b#*-v}" ;;
+  esac
+}
+
+# helm_line_skew_hint <chart_version> <chart_line> <image_line> - what a chart
+# and server from different lines costs, on stdout, or nothing when they agree or
+# either line is unknown. Pure.
+#
+# Worth saying because the pairing comes up and works. The components the chart
+# pins are one line's and the system charts are the other's, and from 2.16 the
+# difference decides whether the system charts arrive at all: that chart copies
+# them out of rancher-assets with an initContainer, which an older chart does not
+# have. Online the server falls back to cloning rancher/charts and the skew is
+# invisible; airgapped there is nothing to clone.
+helm_line_skew_hint() {
+  local chart="${1:-}" cline="${2:-}" iline="${3:-}"
+  [ -n "$cline" ] && [ -n "$iline" ] || return 0
+  [ "$cline" = "$iline" ] && return 0
+  printf 'chart %s is on the %s line but the server carries the %s chart catalog\n' \
+    "$chart" "$cline" "$iline"
+  printf 'components follow the chart and system charts follow the server; use the %s chart unless the skew is the point\n' \
+    "$iline"
+}
+
+# helm_check_chart_line - warn when the resolved chart and image are from
+# different release lines. Never fails a run: an unreadable image, a missing
+# skopeo or an unrecognised branch value all simply say nothing.
+helm_check_chart_line() {
+  is_true "${MUSTER_SKIP_IMAGE_CHECK:-}" && return 0
+  local image="${RANCHER_IMAGE:-rancher/rancher}"
+  local tag="${RANCHER_IMAGE_TAG_RESOLVED:-}"
+  [ -n "$tag" ] || return 0
+  local cline iline line
+  cline="$(chart_release_line "${RANCHER_CHART_VERSION:-}")"
+  iline="$(image_chart_line "$image" "$tag")"
+  while IFS= read -r line; do
+    [ -n "$line" ] && log_warn "$line"
+  done < <(helm_line_skew_hint "${RANCHER_CHART_VERSION:-}" "$cline" "$iline")
+}
+
 # --- keep-fresh (freshness-aware promotion) ----------------------------------
 # When PREFER_STAGING is on and the requested tag is a rolling community head
 # tag (head or vX.Y-head), compare the community head image date against the
@@ -689,6 +760,7 @@ helm_resolve_metadata() {
   export RANCHER_REPO RANCHER_CHART_URL RANCHER_IMAGE RANCHER_CHART_VERSION RANCHER_IMAGE_TAG_RESOLVED
   log_info "resolved (metadata): branch=$branch registry=${img%%/*} image=${img}:${itag} chart=$RANCHER_CHART_VERSION"
   helm_verify_image
+  helm_check_chart_line
 }
 
 # helm_search_charts <repo> - every published version of a repository's rancher
@@ -861,6 +933,7 @@ helm_resolve_version() {
   export RANCHER_CHART_URL RANCHER_IMAGE RANCHER_CHART_VERSION RANCHER_IMAGE_TAG_RESOLVED
   log_info "resolved: repo=$repo chart=$RANCHER_CHART_VERSION image=${RANCHER_IMAGE:-rancher/rancher} tag=$RANCHER_IMAGE_TAG_RESOLVED"
   helm_verify_image
+  helm_check_chart_line
 }
 
 # helm_cert_manager_oci_ref - the OCI reference for the cert-manager chart in the

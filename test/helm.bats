@@ -917,3 +917,83 @@ _resolve_with_override() {
   run helm_channel_line_hint rancher-latest 2.15 "$search"
   [ -z "$output" ]
 }
+
+# --- chart / server line skew ------------------------------------------------
+#
+# A chart and a server image are versioned separately, and neither version string
+# says which line the other is on. The server states its own line in
+# CATTLE_CHART_DEFAULT_BRANCH, so read that and compare.
+
+@test "chart_release_line reads the line off both head chart shapes" {
+  [ "$(chart_release_line 2.16.0-b29c3a6-head)" = "2.16" ]
+  [ "$(chart_release_line 2.15-842907d326ea023d373b40e0b2dca7093b4f1c07-head)" = "2.15" ]
+}
+
+@test "chart_release_line reads the line off releases and pre-releases" {
+  [ "$(chart_release_line 2.14.5-rc2)" = "2.14" ]
+  [ "$(chart_release_line 2.15.1-alpha1)" = "2.15" ]
+  [ "$(chart_release_line 2.13.8)" = "2.13" ]
+  [ "$(chart_release_line v2.13.8)" = "2.13" ]
+}
+
+@test "chart_release_line says nothing for a version that names no line" {
+  [ -z "$(chart_release_line head)" ]
+  [ -z "$(chart_release_line '')" ]
+}
+
+@test "image_chart_line reads the catalog branch off the image config" {
+  image_env() { printf 'dev-v2.16'; }
+  [ "$(image_chart_line rancher/rancher head)" = "2.16" ]
+  image_env() { printf 'release-v2.14'; }
+  [ "$(image_chart_line rancher/rancher v2.14.5-rc2)" = "2.14" ]
+}
+
+@test "image_chart_line says nothing for an unreadable or unrecognised image" {
+  image_env() { printf ''; }
+  [ -z "$(image_chart_line rancher/rancher head)" ]
+  image_env() { printf 'main'; }
+  [ -z "$(image_chart_line rancher/rancher head)" ]
+}
+
+@test "helm_line_skew_hint is silent when the lines agree" {
+  [ -z "$(helm_line_skew_hint 2.14.5-rc2 2.14 2.14)" ]
+}
+
+@test "helm_line_skew_hint is silent when either line is unknown" {
+  [ -z "$(helm_line_skew_hint 2.14.5-rc2 2.14 '')" ]
+  [ -z "$(helm_line_skew_hint head '' 2.16)" ]
+}
+
+@test "helm_line_skew_hint names both lines and which chart to use" {
+  # The live case: branches-metadata points master at the release-2.15 chart
+  # channel while rancher/rancher:head is built from dev-v2.16.
+  run helm_line_skew_hint 2.15-842907d326ea023d373b40e0b2dca7093b4f1c07-head 2.15 2.16
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"is on the 2.15 line but the server carries the 2.16 chart catalog"* ]]
+  [[ "$output" == *"use the 2.16 chart"* ]]
+}
+
+@test "helm_check_chart_line warns on a skew and is quiet on a match" {
+  RANCHER_IMAGE=rancher/rancher
+  RANCHER_IMAGE_TAG_RESOLVED=head
+  RANCHER_CHART_VERSION=2.15-abc-head
+  image_env() { printf 'dev-v2.16'; }
+  run helm_check_chart_line
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"server carries the 2.16 chart catalog"* ]]
+
+  image_env() { printf 'dev-v2.15'; }
+  run helm_check_chart_line
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "helm_check_chart_line stays quiet when image checks are skipped" {
+  RANCHER_IMAGE=rancher/rancher
+  RANCHER_IMAGE_TAG_RESOLVED=head
+  RANCHER_CHART_VERSION=2.15-abc-head
+  image_env() { printf 'dev-v2.16'; }
+  MUSTER_SKIP_IMAGE_CHECK=1 run helm_check_chart_line
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}

@@ -1093,3 +1093,35 @@ _resolve_with_override() {
     'rancher-latest/rancher	2.16.0-b29c3a6-head	x	Install Rancher Server')"
   [ -z "$(resolve_chart_version rancher-latest 2.16 "$search")" ]
 }
+
+@test "head prefers a final release over its own release candidate" {
+  # sort -V ranks 2.15.1-rc2 above 2.15.1, because the suffix makes the string
+  # longer. The GA was published two days after the rc, so it is the newer
+  # chart and the one "head" means.
+  local search
+  search="$(printf '%s\n' \
+    'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+    'rancher-com-rc/rancher	2.15.1-rc2	x	Install Rancher Server' \
+    'rancher-com-rc/rancher	2.15.1	x	Install Rancher Server' \
+    'rancher-com-rc/rancher	2.15.0	x	Install Rancher Server')"
+  [ "$(resolve_chart_version rancher-com-rc head "$search")" = "2.15.1" ]
+}
+
+@test "head still ranks the pre-release ladder correctly" {
+  local search
+  search="$(printf '%s\n' \
+    'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+    'rancher-latest/rancher	2.12.5-rc2	x	Install Rancher Server' \
+    'rancher-latest/rancher	2.12.5-rc10	x	Install Rancher Server' \
+    'rancher-latest/rancher	2.12.5-alpha9	x	Install Rancher Server')"
+  [ "$(resolve_chart_version rancher-latest head "$search")" = "2.12.5-rc10" ]
+}
+
+@test "head still takes the newest line, release or not" {
+  local search
+  search="$(printf '%s\n' \
+    'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+    'rancher-latest/rancher	2.15.1	x	Install Rancher Server' \
+    'rancher-latest/rancher	2.16.0-9a46e2a-head	x	Install Rancher Server')"
+  [ "$(resolve_chart_version rancher-latest head "$search")" = "2.16.0-9a46e2a-head" ]
+}

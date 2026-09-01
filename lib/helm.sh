@@ -104,8 +104,14 @@ resolve_chart_version() {
 
   if [ "$tag" = "head" ]; then
     local top
+    # A final release outranks its own pre-releases, which a bare sort -V does
+    # not do: it ranks 2.15.1-rc2 above 2.15.1 because the suffix makes the
+    # string longer. Rewriting the pre-release separator to "~", which sorts
+    # below the empty string, gives the release ladder. Same trick as
+    # version_ahead, and it leaves rc10 above rc2 and alpha14 above alpha9.
     top="$(printf '%s\n' "$search" \
-      | awk '{print $2}' | sort -V | tail -1 | tr -d '[:space:]')"
+      | awk '{ k=$2; gsub(/-/, "~", k); print k "\t" $2 }' \
+      | sort -V -k1,1 | tail -1 | cut -f2 | tr -d '[:space:]')"
     resolve_head_pick "$top" "$dates"
     return 0
   fi

@@ -117,20 +117,29 @@ complete:
 
 | Source | Covers | Why it is not enough on its own |
 |---|---|---|
-| The release's `rancher-images.txt` | Rancher's own components | Belongs to a release, so it is wrong about a prerelease |
-| The resolved server tag | `rancher/rancher` and `rancher-agent` | The list names the agent only at its GA tag |
+| The build's own `rancher-images.txt` | Rancher's own components, at the tags this build runs | Only exists for a build that publishes artifacts |
+| The resolved server tag | `rancher/rancher` and `rancher-agent` | A fallback list names the agent only at its own tag |
 | The rancher chart, rendered | a component the chart pins its own tag for, such as `rancher-assets` | No list can name a tag that belongs to the chart rather than the release |
 | The k3s release's `k3s-images.txt` | CoreDNS, traefik, metrics-server, local-path-provisioner, klipper, pause | These are k3s's, not Rancher's, and the node runs its own k3s version |
 | The cert-manager chart, rendered | cert-manager and its CRDs | Rancher requires it but does not ship it |
 
-The Rancher list is looked up as `prime.ribs.rancher.io` first and the GitHub
-release second, falling back from the exact version to the line's `.0` release,
-because a prerelease publishes no list of its own. A line that has not released
-at all has no list anywhere, so the fallback keeps walking back a couple of
-minors: 2.16 publishes head builds today while `v2.16.0` does not exist, and
-without that the mirror could not be filled for it. An older list names the same
-families at slightly older tags, which is a starting point rather than nothing,
-and the healing described below corrects the rest.
+Every build publishes its own list, and only that list names the component
+versions the build actually runs. Where it lives depends on the version shape:
+
+| Chart | List |
+|---|---|
+| `X.Y.Z-<sha>-head` | `prime.ribs.rancher.io/rancher/internal/prime/head/v<version>` |
+| `X.Y.Z-rcN`, `-alphaN`, `X.Y.Z` | `prime.ribs.rancher.io/rancher/v<version>`, then the GitHub release |
+
+This matters more than it sounds. Resolved against the `v2.14.0` list, a
+`2.14.6-<sha>-head` chart is missing fourteen core images, and each one is an
+`ImagePullBackOff` the healing below then has to repair one at a time.
+
+Only when a build publishes no list does the lookup fall back: to the line's
+`.0` release, and then back a couple of minors. A per-branch head chart
+(`X.Y-<sha>-head`) has no artifacts of its own and always takes that path. An
+older list names the same families at slightly older tags, which is a starting
+point rather than nothing, and the healing corrects the rest.
 
 `rancher-assets` is the reason the chart is rendered rather than trusted to the
 list. From 2.16 the bundled system charts live in that image instead of the
@@ -156,17 +165,16 @@ everything the release ships.
 
 ### Prereleases repair themselves
 
-A prerelease chart pulls prerelease components, and no static list can name them.
-A 2.15.1-alpha1 server wants `rancher-webhook:v0.11.1-rc.1` and
-`fleet:v0.16.1-beta.1` where the 2.15.0 list names the released versions, and
-those versions are not in the chart either: they come from the chart catalog
-bundled inside the server image and are chosen when it starts. Rendering the
-chart only yields `rancher/rancher` and `rancher/shell`.
+A prerelease pulls prerelease components. Its own list names most of them, but
+some are not in any list: they come from the chart catalog bundled inside the
+server image and are chosen when it starts, and rendering the chart only yields
+`rancher/rancher` and `rancher/shell`. A build with no list of its own is
+mirrored from an older one and starts with more gaps than that.
 
 The only thing that knows is the running cluster, and it says so plainly, by
 failing to pull an image it names. So in airgap the readiness gates repair what
 they are waiting for: between attempts they read the failing pulls, copy those
-images into the mirror, and restart the stuck pods. An alpha comes up in one
+images into the mirror, and restart the stuck pods. The run comes up in one
 pass, and the log says what it had to fetch:
 
 ```

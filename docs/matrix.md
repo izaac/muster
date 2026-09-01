@@ -60,32 +60,34 @@ The **Prime** rows take the newest Prime release of a line. Which channel holds
 that changes as a line progresses, so name the line and let muster find it:
 
 ```sh
-muster up --dry-run --channel-source prime --version 2.14   # 2.14.4-rc1     (rancher-latest)
-muster up --dry-run --channel-source prime --version 2.13   # 2.13.8-rc1     (rancher-latest)
-muster up --dry-run --channel-source prime --version 2.15   # 2.15.1-alpha1  (rancher-alpha)
+muster up --dry-run --channel-source prime --version 2.15   # 2.15.1-rc2
+muster up --dry-run --channel-source prime --version 2.14   # 2.14.5-rc2
+muster up --dry-run --channel-source prime --version 2.13   # 2.13.9-rc2
 ```
 
 One command shape for every row. `--repo` is ignored, as in metadata mode.
 
 Naming the channel by hand instead is wrong in both directions, and the wrongness
-moves: `--repo rancher-latest --version 2.15` fails today because that line has
-no rc yet, and `--repo rancher-alpha --version 2.14` quietly installs an alpha
-when an rc exists. Both flip as a line progresses, so a job that is correct today
-breaks or silently downgrades later with nothing in it having changed.
+moves: a line with no rc yet is absent from `rancher-latest`, and asking
+`rancher-alpha` for a line that has reached rc quietly installs an alpha. Both
+flip as a line progresses, so a job that is correct today breaks or silently
+downgrades later with nothing in it having changed. The release team is also
+consolidating the Prime pre-release charts into a single channel, which moves the
+answer again; a row that names the line rather than the channel is unaffected.
 
-**Release, not most recent.** `rancher-latest` also carries commit-named head
-charts, and for 2.15 those are the freshest thing published:
+**Release, not most recent.** The Prime channels also carry commit-named head
+charts, and those are usually the freshest thing published for a line:
 
-| channel | newest 2.15 chart | published |
-|---|---|---|
-| `rancher-latest` | `2.15.1-6455c9ca...-head` | 2026-08-14 |
-| `rancher-alpha` | `2.15.1-alpha1` | 2026-08-05 |
+| chart | published |
+|---|---|
+| `2.15.2-a90f264-head` | 2026-09-01 |
+| `2.15.1-rc2` | 2026-08-25 |
 
-`prime:` picks the alpha anyway. A head chart is a new identity on every commit,
+A Prime row picks the rc anyway. A head chart is a new identity on every commit,
 so a row resolving to one would deploy a different build every run, which is the
-property a Prime row exists not to have. An alpha stays put until the next alpha.
-Both are Prime builds; the difference is release versus rolling. To run a head
-build deliberately, pin one: `--repo rancher-latest --version <the exact chart>`.
+property a Prime row exists not to have. A release stays put. Both are Prime
+builds; the difference is release versus rolling. To run a head build
+deliberately, pin one: `--repo rancher-latest --version <the exact chart>`.
 
 The ordering is the release ladder, not the calendar: a final release outranks
 its own rc, and an rc outranks an alpha.
@@ -101,20 +103,27 @@ $ muster up --dry-run --channel-source prime --version 2.16
          --repo rancher-latest --version <one of the above>
 ```
 
-A `metadata:` head row deploys from whichever registry the key names, and it
-still reports Community, so `RancherPrime` must not be asserted on it. The
-reason is narrower than "head builds are Community", because two different tags
-are both called a head build:
+A `metadata:` head row deploys from whichever registry the key names. Whether it
+reports Prime is a property of the build, and it is about to change: the release
+team is moving the floating `vX.Y-head` tags onto Prime builds from 11 September
+2026, starting with the lines that are Prime-only. Two different tags are both
+called a head build, and today only one of them is Prime:
 
-| Tag | Where it is published | Reports |
+| Tag | Where it is published | Reports today |
 |---|---|---|
-| `vX.Y-head` (branch head, rolling) | Docker Hub, and the staging registry while that line publishes there | `community` |
+| `vX.Y-head` (branch head, rolling) | Docker Hub, and the staging registry while that line publishes there | `community`, becoming `prime` per line |
 | `vX.Y.Z-<sha>-head` (one commit) | staging registry only | `prime` |
 
-The matrix rows use the first: `branches-metadata.json` pins `v2.14-head`, so a
-`metadata:` row is a Community-type build wherever it is served from. The second
-is what `rancher-latest` head charts point at, and it is Prime, which is why
-pinning one of those charts is a way to run a Prime head build.
+So a `metadata:` row must not assert either value from the tag shape. muster
+reads it off the image config rather than inferring it, which is what makes the
+answer follow the flip without a change here:
+
+```sh
+muster up --dry-run --channel-source metadata --version v2.14-head   # prints flavour
+```
+
+Assert what `--dry-run` reports, or drop the assertion for `metadata:` rows and
+keep it on the `prime:` and `community:` rows, whose channel fixes the answer.
 
 `--prefer-staging` is a date/patch probe for ad-hoc use and is deliberately
 **not** a CI input, because it is not reproducible day to day.

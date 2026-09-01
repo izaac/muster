@@ -37,10 +37,14 @@ muster up --provider k3d --repo rancher-latest --version head
 ```
 
 ```
-  chart version    2.16.0-ff28ae6aea8dcb820bcc2ff8bfd1bc45d4e2ee65-head
-  image            stgregistry.suse.com/rancher/rancher:v2.16.0-...-head
+  chart version    2.16.0-9a46e2a-head
+  image            stgregistry.suse.com/rancher/rancher:v2.16.0-9a46e2a-head
   flavour          prime  (Prime-only UI extensions will load)
 ```
+
+"Newest" here is the newest by publication date, not by version sort: a commit
+sha carries no order, so sorting one picks whichever commit has the highest hex
+rather than the latest build.
 
 Because those charts are commit-named, `--version head` follows whatever was
 built last, which is what makes it unsuitable as a CI input. Pin one to get a
@@ -48,15 +52,14 @@ reproducible run; a version naming one published chart is matched exactly, so no
 channel filter applies:
 
 ```sh
-muster up --provider k3d --repo rancher-latest \
-  --version 2.15.1-c7913dce4e586d7b87cf73bbf6443d953bd184f7-head
+muster up --provider k3d --repo rancher-latest --version 2.16.0-9a46e2a-head
 ```
 
-The available ones are in the channel listing:
+The available ones are in the channel listing, newest last:
 
 ```sh
-helm search repo rancher-latest/rancher --devel --versions --max-col-width=0 \
-  | grep -- '-head'
+curl -fsS https://charts.optimus.rancher.io/server-charts/latest/index.yaml \
+  | grep -E '^    (version|created):'
 ```
 
 Pair a chart with a server from a different line only on purpose, and knowing
@@ -100,17 +103,18 @@ muster up --provider k3d --repo rancher-alpha --version head \
 ```
 
 On the staging registry a head build is published under two different tag
-schemes, and only one of them is Community:
+schemes, and today only one of them is Prime:
 
-| Tag | Published to | Reports |
+| Tag | Published to | Reports today |
 |---|---|---|
 | `vX.Y-head` (branch head, rolling) | Docker Hub, and staging while that line publishes there | `community` |
 | `vX.Y.Z-<sha>-head` (one commit) | staging only | `prime` |
 
-The nightly matrix rows use the first, because `branches-metadata.json` pins
-`v2.14-head`, which is why a `metadata:` row must not assert `RancherPrime`. The
-`rancher-latest` head charts point at the second, which is what makes pinning one
-a way to run a Prime head build.
+The first column is not stable. The release team is moving the floating
+`vX.Y-head` tags onto Prime builds from 11 September 2026, and disabling the
+Community builds for the lines that are Prime-only, so a `vX.Y-head` that reports
+Community today reports Prime afterwards. Read the flavour off the image with
+`--dry-run` rather than deriving it from the tag.
 
 There is also no `v2.16-head` and no plain `head` on the staging registry, so
 reading a flavour off one by hand looks like this:
@@ -143,24 +147,24 @@ is worth knowing in both directions: the chart channel is not a reliable
 statement about the build, and a component set can be varied independently of
 the server to reproduce a version skew.
 
-### When a line has no release candidate yet
+### When a line has no release yet
 
-`rancher-latest` selects release candidates and `rancher-alpha` selects alphas,
-so a bare minor means "the newest rc (or alpha) of that line". A line that is
+`rancher-latest` selects releases and `rancher-alpha` selects alphas, so a bare
+minor means "the newest release (or alpha) of that line". A line that is
 published but has not reached that stage resolves to nothing, and muster says
 which shapes it does carry rather than only that nothing matched:
 
 ```
-$ muster up --dry-run --repo rancher-latest --version 2.15
-[muster] ERROR the 2.15 line is in rancher-latest but has no -rc chart yet;
-         it carries: 2.15.1-30739f3e...-head 2.15.1-ac63bee9...-head
-[muster] ERROR for a 2.15 pre-release try --repo rancher-alpha --version 2.15,
-         or pin one of the above with --version
-[muster] ERROR no chart version in rancher-latest matches '2.15'
+$ muster up --dry-run --repo rancher-latest --version 2.16
+[muster] ERROR the 2.16 line is in rancher-latest but has no release chart yet;
+         it carries: 2.16.0-23449b8-head 2.16.0-9a46e2a-head ...
+[muster] ERROR for the newest Prime release of 2.16 try --channel-source prime
+         --version 2.16, or --repo rancher-alpha, or pin one of the above
+[muster] ERROR no chart version in rancher-latest matches '2.16'
 ```
 
 The filter is deliberate: if a bare minor fell back to a head build, a pinned CI
-input would quietly change from a fixed release candidate to a rolling one.
+input would quietly change from a fixed release to a rolling one.
 
 ### Channels
 
@@ -168,14 +172,16 @@ input would quietly change from a fixed release candidate to a rolling one.
 |---|---|---|---|
 | `rancher-prime` | `charts.rancher.com/server-charts/prime` | `registry.suse.com/rancher/rancher` | GA prime. |
 | `rancher-prime-ga` | `charts.rancher.com/server-charts/prime` | `registry.rancher.com/rancher/rancher` | Same charts, prime images without credentials. |
-| `rancher-latest` | `charts.optimus.rancher.io/server-charts/latest` | `stgregistry.suse.com/rancher/rancher` | Release candidates. |
-| `rancher-alpha` | `charts.optimus.rancher.io/server-charts/alpha` | `stgregistry.suse.com/rancher/rancher` | Alphas; the newest builds of an unreleased line. |
+| `rancher-latest` | `charts.optimus.rancher.io/server-charts/latest` | `stgregistry.suse.com/rancher/rancher` | Prime pre-releases: release candidates, plus a commit-named chart per head build. |
+| `rancher-alpha` | `charts.optimus.rancher.io/server-charts/alpha` | `stgregistry.suse.com/rancher/rancher` | Prime alphas. Being consolidated into `rancher-latest`. |
 | `rancher-com-rc` | `releases.rancher.com/server-charts/latest` | Docker Hub `rancher/rancher` | Community RC line. |
 | `rancher-com-alpha` | `releases.rancher.com/server-charts/alpha` | Docker Hub `rancher/rancher` | Community alpha line. Default. |
 | `rancher-community` | `releases.rancher.com/server-charts/stable` | Docker Hub `rancher/rancher` | Community stable. |
 
 The staging channels publish freely pullable images and are the usual choice for
-testing.
+testing. `--version head` on a channel of commit-named charts resolves the newest
+line by version and then the newest build of that line by publication date, since
+a commit sha carries no order of its own.
 
 Two things about this table are not fixed and should not be relied on:
 
@@ -240,11 +246,15 @@ done
 ```
 
 ```
-rancher-prime-ga   registry.rancher.com/rancher/rancher:v2.14.4        prime
-rancher-latest     stgregistry.suse.com/rancher/rancher:v2.14.4-rc1    prime
-rancher-alpha      stgregistry.suse.com/rancher/rancher:v2.14.4-alpha7 prime
-rancher-com-rc     no chart version matches (2.14 stops at 2.14.3 on Docker Hub)
+rancher-prime-ga   registry.rancher.com/rancher/rancher:v2.14.5         prime
+rancher-latest     stgregistry.suse.com/rancher/rancher:v2.14.5-rc2     prime
+rancher-alpha      stgregistry.suse.com/rancher/rancher:v2.14.5-alpha1  prime
+rancher-com-rc     rancher/rancher:v2.14.3                              community
 ```
+
+The last row is the point of running the comparison: the Community line stopped
+at 2.14.3 while the Prime one is on 2.14.5, so a job pinned to that channel is
+three patches behind and says nothing about it.
 
 `--dry-run` also runs the image preflight, so a tag that does not exist fails
 here in a second or two rather than after the rollout wait has timed out.

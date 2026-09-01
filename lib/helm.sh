@@ -92,7 +92,7 @@ version_string() {
 # identifiers lexically, so 2.x-alpha9 ranks above 2.x-alpha14 ('9' > '1') and a
 # plain `head -1` would pick a stale alpha. Version sort gives the true newest.
 resolve_chart_version() {
-  local repo="$1" tag="$2" search="$3" vs filter
+  local repo="$1" tag="$2" search="$3" dates="${4:-}" vs filter
   vs="$(version_string "$tag")"
 
   # `helm search repo <name>` is a keyword search over every configured
@@ -103,8 +103,10 @@ resolve_chart_version() {
   search="$(printf '%s\n' "$search" | grep "^${repo}/rancher[[:space:]]" || true)"
 
   if [ "$tag" = "head" ]; then
-    printf '%s\n' "$search" \
-      | awk '{print $2}' | sort -V | tail -1 | tr -d '[:space:]'
+    local top
+    top="$(printf '%s\n' "$search" \
+      | awk '{print $2}' | sort -V | tail -1 | tr -d '[:space:]')"
+    resolve_head_pick "$top" "$dates"
     return 0
   fi
 
@@ -129,13 +131,20 @@ resolve_chart_version() {
 
   case "$repo" in
     rancher-alpha) filter="-alpha" ;;
-    rancher-latest) filter="-rc" ;;
+    # The Prime pre-release channels are being consolidated: the release team is
+    # moving the alphas into this one, and eventually the head charts too. An
+    # alpha here today would be invisible to an -rc filter, and the line would
+    # read as absent rather than pre-rc. Accept both shapes now: the channel
+    # carries no alpha yet, so this changes nothing until it does, and when a
+    # line holds both the ordering still prefers the rc (semver ranks a release
+    # candidate above an alpha, and so does a plain version sort).
+    rancher-latest) filter="-rc|-alpha" ;;
     *) filter="" ;;
   esac
 
   if [ -n "$filter" ]; then
     printf '%s\n' "$search" \
-      | grep "$vs" | grep -- "$filter" \
+      | grep "$vs" | grep -E -- "$filter" \
       | awk '{print $2}' | sort -V | tail -1 | tr -d '[:space:]'
   else
     # No channel filter (prime / community stable / exact pin). A plain version
@@ -627,10 +636,11 @@ _freshness_curl() {
   curl "${args[@]}" "$url" 2>/dev/null
 }
 
-# fetch_index_dates <channel> - download a channel index.yaml and parse it.
-fetch_index_dates() {
-  _freshness_curl "$(repo_url "$1")/index.yaml" | index_rancher_dates
-}
+# fetch_index_dates_url <chart_repo_url> - download an index.yaml and parse it.
+fetch_index_dates_url() { _freshness_curl "${1:?url required}/index.yaml" | index_rancher_dates; }
+
+# fetch_index_dates <channel> - the same, for a known channel key.
+fetch_index_dates() { fetch_index_dates_url "$(repo_url "$1")"; }
 
 # freshness_newest_release <version_regex> <channel...> - the newest RELEASE
 # chart for a line across the given channels (an rc, alpha or GA, but never a
@@ -706,16 +716,65 @@ freshness_maybe_promote() {
   fi
 }
 
-# metadata_pick_chart <repo> <search_text> - the chart version to run from a
-# per-branch head channel, on stdout. Pure. Such a channel carries only that
-# branch's head chart, so the newest by version sort is the one to run; the
-# repo-scoped grep also drops the header and any same-named chart from another
-# configured repository.
+# newest_head_on_line <line> <dates> - the most recently published head chart on
+# one release line, from "stab|version|created" rows. Pure; empty when the rows
+# carry no head chart for that line.
+newest_head_on_line() {
+  local line="${1:?line required}" dates="${2:-}" vre
+  [ -n "$dates" ] || return 0
+  vre="$(printf '%s' "$line" | sed 's/\./[.]/g')[.-]"
+  printf '%s\n' "$dates" | newest_head_versions "$vre" 1
+}
+
+# resolve_head_pick <version_sort_winner> <dates> - refine "the newest chart in
+# this channel" when that chart is commit-named. Pure.
+#
+# Version sort orders the release lines correctly, because a line is a real
+# version, but inside a line a head chart is X.Y.Z-<sha>-head and the sha carries
+# no order: sorting it picks whichever commit has the highest hex rather than the
+# newest build. On the consolidated Prime channel that is not a near miss.
+# Today rancher-latest resolves `head` to a 2.16 chart published on 14 August
+# while the newest 2.16 chart was published today, because ffbd1cc9 outranks
+# b29c3a6 as a string.
+#
+# The release team's own guidance is to order these by the index's creation date,
+# so take the line from the version sort and the build from the date.
+#
+# Falls back to the version-sort answer whenever the winner is not a head chart
+# or the line has no dated rows, so a channel of releases, or one whose index
+# could not be read, resolves exactly as it did before.
+resolve_head_pick() {
+  local top="${1:-}" dates="${2:-}" line pick
+  case "$top" in
+    *-head) ;;
+    *)
+      printf '%s' "$top"
+      return 0
+      ;;
+  esac
+  line="$(chart_release_line "$top")"
+  if [ -z "$line" ]; then
+    printf '%s' "$top"
+    return 0
+  fi
+  pick="$(newest_head_on_line "$line" "$dates")"
+  printf '%s' "${pick:-$top}"
+}
+
+# metadata_pick_chart <repo> <search_text> [dates] - the chart version to run
+# from a per-branch head channel, on stdout. Pure. The repo-scoped grep drops the
+# header and any same-named chart from another configured repository.
+#
+# Such a channel has carried a single chart, so version sort was enough. The
+# release team is giving head charts a chart history, at which point sorting a
+# commit sha stops meaning anything, so order by the index date when there is
+# one and keep the old answer when there is not.
 metadata_pick_chart() {
-  local repo="${1:?repo required}" search="${2:-}"
-  printf '%s\n' "$search" \
+  local repo="${1:?repo required}" search="${2:-}" dates="${3:-}" top
+  top="$(printf '%s\n' "$search" \
     | grep "^${repo}/rancher[[:space:]]" \
-    | awk '{print $2}' | sort -V | tail -1 | tr -d '[:space:]'
+    | awk '{print $2}' | sort -V | tail -1 | tr -d '[:space:]')"
+  resolve_head_pick "$top" "$dates"
 }
 
 # helm_resolve_metadata - resolve the server image, chart and tag from the
@@ -752,7 +811,11 @@ helm_resolve_metadata() {
   retry 3 5 "helm repo add $repo" -- helm repo add "$repo" "$url" --force-update
   retry 3 5 "helm repo update" -- helm repo update "$repo"
   search="$(helm_search_charts "$repo")"
-  RANCHER_CHART_VERSION="$(metadata_pick_chart "$repo" "$search")"
+  # A head chart is commit-named, so only the index date orders one branch's
+  # builds. Every tag here names a branch head, so the ordering always applies.
+  local dates=""
+  dates="$(fetch_index_dates_url "$url" 2>/dev/null || true)"
+  RANCHER_CHART_VERSION="$(metadata_pick_chart "$repo" "$search" "$dates")"
   [ -n "$RANCHER_CHART_VERSION" ] || die "channel-source metadata: no rancher chart at ${url} for ${branch}"
 
   RANCHER_REPO="$repo"
@@ -797,23 +860,24 @@ helm_search_charts() {
 # helm_channel_line_hint <repo> <tag> <search> - explain a miss that is really a
 # channel mismatch rather than a missing version, on stdout.
 #
-# rancher-latest carries release candidates and rancher-alpha carries alphas, so
-# resolving a bare minor in either filters on that suffix. A line that exists in
-# the channel but has not reached that stage yet resolves to nothing, and the
-# bare "no chart version matches" is actively misleading: the version is right
-# there in the listing, in a shape this channel does not select. Say which shapes
-# the line does carry and where the build being asked for actually lives.
+# Each Prime channel selects a release shape, so resolving a bare minor filters
+# on it. A line that exists in the channel but has not reached that stage yet
+# resolves to nothing, and the bare "no chart version matches" is actively
+# misleading: the version is right there in the listing, in a shape this channel
+# does not select. Say which shapes the line does carry and where to get one.
 #
-# The filter itself is deliberate and stays: a bare minor on rancher-latest means
-# "the newest rc of that line", and resolving it to a rolling commit build
-# instead would quietly change what a pinned CI input installs.
+# The filter itself is deliberate and stays: a bare minor means "the newest
+# release of that line", and resolving it to a rolling commit build instead would
+# quietly change what a pinned CI input installs. What a caller almost always
+# wants here is --channel-source prime, which finds the release wherever it is,
+# so name that first and the manual channel second.
 helm_channel_line_hint() {
   local repo="${1:?repo required}" tag="${2:?tag required}" search="${3:-}"
   local vs filter alt on_line newest
   vs="$(version_string "$tag")"
   case "$repo" in
     rancher-latest)
-      filter="-rc"
+      filter="release"
       alt="rancher-alpha"
       ;;
     rancher-alpha)
@@ -833,8 +897,8 @@ helm_channel_line_hint() {
   newest="$(printf '%s\n' "$on_line" | sort -V | tail -3 | tr '\n' ' ')"
   printf 'the %s line is in %s but has no %s chart yet; it carries: %s\n' \
     "$vs" "$repo" "$filter" "$newest"
-  printf 'for a %s pre-release try --repo %s --version %s, or pin one of the above with --version\n' \
-    "$vs" "$alt" "$vs"
+  printf 'for the newest Prime release of %s try --channel-source prime --version %s, or --repo %s, or pin one of the above with --version\n' \
+    "$vs" "$vs" "$alt"
 }
 
 # helm_prime_head_hint <minor> <version_regex> <channel...> - explain a line that
@@ -935,7 +999,12 @@ helm_resolve_version() {
 
   local search
   search="$(helm_search_charts "$repo")"
-  RANCHER_CHART_VERSION="$(resolve_chart_version "$repo" "$tag" "$search" || true)"
+  # A head chart is commit-named, so version sort cannot order one line's builds
+  # and only the index date can. Fetched for `head` alone, the one tag that has
+  # to choose between them.
+  local dates=""
+  [ "$tag" = head ] && dates="$(fetch_index_dates "$repo" 2>/dev/null || true)"
+  RANCHER_CHART_VERSION="$(resolve_chart_version "$repo" "$tag" "$search" "$dates" || true)"
   if [ -z "$RANCHER_CHART_VERSION" ]; then
     local available why line_hint
     line_hint="$(helm_channel_line_hint "$repo" "$tag" "$search" || true)"

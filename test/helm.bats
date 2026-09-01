@@ -865,9 +865,10 @@ _resolve_with_override() {
   )"
   run helm_channel_line_hint rancher-latest 2.15 "$search"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"2.15 line is in rancher-latest but has no -rc chart yet"* ]]
+  [[ "$output" == *"2.15 line is in rancher-latest but has no release chart yet"* ]]
   [[ "$output" == *"2.15.1-c7913dce4e586d7b87cf73bbf6443d953bd184f7-head"* ]]
-  [[ "$output" == *"--repo rancher-alpha --version 2.15"* ]]
+  [[ "$output" == *"--channel-source prime --version 2.15"* ]]
+  [[ "$output" == *"--repo rancher-alpha"* ]]
   # A chart from another line is not evidence about this one.
   [[ "$output" != *"2.16.0"* ]]
 }
@@ -881,7 +882,8 @@ _resolve_with_override() {
   )"
   run helm_channel_line_hint rancher-alpha 2.13 "$search"
   [[ "$output" == *"has no -alpha chart yet"* ]]
-  [[ "$output" == *"--repo rancher-latest --version 2.13"* ]]
+  [[ "$output" == *"--channel-source prime --version 2.13"* ]]
+  [[ "$output" == *"--repo rancher-latest"* ]]
 }
 
 @test "the hint stays silent when the line is genuinely absent" {
@@ -996,4 +998,98 @@ _resolve_with_override() {
   MUSTER_SKIP_IMAGE_CHECK=1 run helm_check_chart_line
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+}
+
+# --- head resolution on a channel of commit-named charts ---------------------
+#
+# The release team is consolidating every Prime pre-release chart into one
+# channel, where a head chart is X.Y.Z-<sha>-head. The sha carries no order, so
+# version sort picks the highest hex rather than the newest build: rancher-latest
+# resolves `head` to a chart published on 14 August because ffbd1cc9 outranks
+# b29c3a6 as a string. The line still comes from the version sort; the build
+# comes from the index date.
+
+@test "resolve_head_pick returns a release winner untouched" {
+  [ "$(resolve_head_pick 2.13.0-rc2 '')" = "2.13.0-rc2" ]
+  [ "$(resolve_head_pick 2.14.4 'anything')" = "2.14.4" ]
+}
+
+@test "resolve_head_pick takes the newest head chart of the winner's line" {
+  local dates
+  dates="$(printf '%s\n' \
+    '0|2.16.0-ffbd1cc9-head|2026-08-14T15:42:29Z' \
+    '0|2.16.0-b29c3a6-head|2026-09-01T14:43:51Z' \
+    '0|2.15.2-a90f264-head|2026-09-01T16:06:40Z')"
+  [ "$(resolve_head_pick 2.16.0-ffbd1cc9-head "$dates")" = "2.16.0-b29c3a6-head" ]
+}
+
+@test "resolve_head_pick keeps the version-sort answer with no dates" {
+  [ "$(resolve_head_pick 2.16.0-ffbd1cc9-head '')" = "2.16.0-ffbd1cc9-head" ]
+}
+
+@test "resolve_head_pick keeps the version-sort answer when its line has no dated row" {
+  local dates
+  dates="$(printf '%s\n' '0|2.15.2-a90f264-head|2026-09-01T16:06:40Z')"
+  [ "$(resolve_head_pick 2.16.0-ffbd1cc9-head "$dates")" = "2.16.0-ffbd1cc9-head" ]
+}
+
+@test "resolve_head_pick does not cross lines to a newer head chart" {
+  # 2.12 publishes more often than 2.16, so the newest chart in the channel by
+  # date is a 2.12 one. "head" still means the newest line.
+  local dates
+  dates="$(printf '%s\n' \
+    '0|2.16.0-b29c3a6-head|2026-09-01T14:43:51Z' \
+    '0|2.12.14-3af2829-head|2026-09-01T16:11:39Z')"
+  [ "$(resolve_head_pick 2.16.0-b29c3a6-head "$dates")" = "2.16.0-b29c3a6-head" ]
+}
+
+@test "resolve_head_pick handles the per-branch head chart shape" {
+  local dates
+  dates="$(printf '%s\n' \
+    '0|2.15-aaa-head|2026-08-01T00:00:00Z' \
+    '0|2.15-bbb-head|2026-09-01T00:00:00Z')"
+  [ "$(resolve_head_pick 2.15-aaa-head "$dates")" = "2.15-bbb-head" ]
+}
+
+@test "resolve_chart_version head orders commit charts by date when given them" {
+  local search dates
+  search="$(printf '%s\n' \
+    'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+    'rancher-latest/rancher	2.16.0-ffbd1cc9-head	x	Install Rancher Server' \
+    'rancher-latest/rancher	2.16.0-b29c3a6-head	x	Install Rancher Server')"
+  dates="$(printf '%s\n' \
+    '0|2.16.0-ffbd1cc9-head|2026-08-14T15:42:29Z' \
+    '0|2.16.0-b29c3a6-head|2026-09-01T14:43:51Z')"
+  [ "$(resolve_chart_version rancher-latest head "$search" "$dates")" = "2.16.0-b29c3a6-head" ]
+  # Without dates the answer is exactly what it was before.
+  [ "$(resolve_chart_version rancher-latest head "$search")" = "2.16.0-ffbd1cc9-head" ]
+}
+
+# --- the consolidated Prime pre-release channel ------------------------------
+
+@test "rancher-latest selects an alpha once the line has no rc" {
+  # The release team is moving the Prime alphas into this channel. Until they
+  # arrive this changes nothing, because the channel carries none.
+  local search
+  search="$(printf '%s\n' \
+    'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+    'rancher-latest/rancher	2.15.1-alpha1	x	Install Rancher Server')"
+  [ "$(resolve_chart_version rancher-latest 2.15 "$search")" = "2.15.1-alpha1" ]
+}
+
+@test "rancher-latest still prefers the rc when a line has both" {
+  local search
+  search="$(printf '%s\n' \
+    'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+    'rancher-latest/rancher	2.15.1-alpha1	x	Install Rancher Server' \
+    'rancher-latest/rancher	2.15.1-rc2	x	Install Rancher Server')"
+  [ "$(resolve_chart_version rancher-latest 2.15 "$search")" = "2.15.1-rc2" ]
+}
+
+@test "rancher-latest still ignores a head chart for a bare minor" {
+  local search
+  search="$(printf '%s\n' \
+    'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+    'rancher-latest/rancher	2.16.0-b29c3a6-head	x	Install Rancher Server')"
+  [ -z "$(resolve_chart_version rancher-latest 2.16 "$search")" ]
 }

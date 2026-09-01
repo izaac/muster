@@ -203,10 +203,39 @@ setup() {
 
 # --- image-list fallback for a line that has not released ---------------------
 
-@test "mirror_list_candidates keeps the release's own list first" {
+@test "mirror_list_candidates asks for the build's own list first" {
+  # A pre-release publishes its own list, naming its own component tags
+  # (fleet v0.16.1-beta.1 where the release names v0.16.0). The release list is
+  # a fallback, not the answer.
   run mirror_list_candidates 2.14.4-rc1
   [ "$status" -eq 0 ]
-  [ "$(printf '%s\n' "$output" | head -1)" = "https://prime.ribs.rancher.io/rancher/v2.14.4/rancher-images.txt" ]
+  [ "$(printf '%s\n' "$output" | head -1)" = "https://prime.ribs.rancher.io/rancher/v2.14.4-rc1/rancher-images.txt" ]
+  [[ "$output" == *"/v2.14.4/rancher-images.txt"* ]]
+}
+
+@test "mirror_list_candidates takes a commit head list from the prime head path" {
+  # Scheduled Prime head builds publish under a separate path, and their server
+  # and agent are commit-tagged, so no release list can name them.
+  run mirror_list_candidates 2.16.0-b29c3a6-head
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | head -1)" = "https://prime.ribs.rancher.io/rancher/internal/prime/head/v2.16.0-b29c3a6-head/rancher-images.txt" ]
+}
+
+@test "mirror_list_candidates does not invent a list for a per-branch head chart" {
+  # X.Y-<sha>-head is a chart identity with no artifacts of its own, so asking
+  # for one is a request that can only 404.
+  run mirror_list_candidates 2.15-842907d326ea023d373b40e0b2dca7093b4f1c07-head
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"internal/prime/head"* ]]
+  [[ "$output" == *"/v2.15.0/rancher-images.txt"* ]]
+}
+
+@test "mirror_list_candidates asks GitHub for a pre-release too" {
+  # Community pre-releases (2.15.1-alpha1) are published as a GitHub release
+  # asset as well, so keep both sources for the exact version.
+  run mirror_list_candidates 2.15.1-alpha1
+  [[ "$output" == *"https://prime.ribs.rancher.io/rancher/v2.15.1-alpha1/rancher-images.txt"* ]]
+  [[ "$output" == *"https://github.com/rancher/rancher/releases/download/v2.15.1-alpha1/rancher-images.txt"* ]]
 }
 
 @test "mirror_list_candidates walks back a minor when the line has no release" {

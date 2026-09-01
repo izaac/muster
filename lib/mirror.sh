@@ -55,26 +55,54 @@ MUSTER_MIRROR_CERT_MANAGER_CHART="quay.io/jetstack/charts/cert-manager"
 
 # mirror_list_candidates <chart_version> - image-list URLs to try, best first.
 #
-# A pre-release has no list of its own, so fall back to the release it is built
-# from and then to that line's first release. A line that has not released at all
-# has no list anywhere: 2.16 today publishes head builds while v2.16.0 does not
-# exist, and without a further fallback the mirror could not be filled for it. So
-# keep walking back a couple of minors, whose list names the same families at
-# slightly older tags, which is a working starting point rather than nothing.
+# A build publishes its own image list, and only that list names the components
+# the build actually runs. A pre-release names them at their own pre-release tags
+# (fleet v0.16.1-beta.1 where the release names v0.16.0), and a head build names
+# a commit-tagged server and agent that no release list can carry at all. So ask
+# for the build's own list first, at the path its version shape is published
+# under:
+#
+#   X.Y.Z-<sha>-head    internal/prime/head/v<version>   scheduled Prime head
+#   X.Y.Z-rcN, -alphaN  v<version>                       pre-release
+#   X.Y.Z               v<version>                       release
+#
+# Only then fall back to the release the build came from, and then to that line's
+# first release. A line that has not released at all has no list under its own
+# version: 2.16 today publishes head builds while v2.16.0 does not exist, so keep
+# walking back a couple of minors, whose list names the same families at slightly
+# older tags. That is a working starting point rather than nothing.
+#
+# The fallback is a floor, not a substitute. Resolved against the v2.14.0 list, a
+# 2.14.6-<sha>-head chart is missing fourteen core images, and each one becomes
+# an ImagePullBackOff that the pull healing then repairs one at a time.
 #
 # The list only supplies supporting images. The server image, its agent and the
-# cert-manager chart are mirrored from what actually resolved, and anything the
+# cert-manager chart are mirrored from what actually resolved, and anything an
 # older list names at a stale tag is corrected by the pull healing during `up` or
 # by `mirror --from-cluster`.
 #
-# Candidates are only ever appended, and the first that resolves wins, so every
-# chart that found a list before finds the same one.
+# The fallbacks are unchanged and still tried in the same order, so a chart that
+# found a list before still finds one.
 mirror_list_candidates() {
   local v="${1:?chart version required}" base minor major min_n
   base="${v%%-*}"
   minor="$(printf '%s' "$base" | cut -d. -f1,2)"
   major="${minor%%.*}"
   min_n="${minor##*.}"
+
+  # The build's own list, when the version names one build rather than a line.
+  # A commit head is published under a separate path; every other shape sits
+  # beside the releases. Both need a patch version: the per-branch head charts
+  # (X.Y-<sha>-head) are a chart identity with no artifacts of their own.
+  case "$v" in
+    *.*.*-*-head)
+      printf 'https://prime.ribs.rancher.io/rancher/internal/prime/head/v%s/rancher-images.txt\n' "$v"
+      ;;
+    *.*.*-*)
+      printf 'https://prime.ribs.rancher.io/rancher/v%s/rancher-images.txt\n' "$v"
+      printf 'https://github.com/rancher/rancher/releases/download/v%s/rancher-images.txt\n' "$v"
+      ;;
+  esac
 
   local ver seen=""
   for ver in "$base" "${minor}.0" \

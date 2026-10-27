@@ -132,6 +132,61 @@ setup() {
   [ "$(ui_source rancher/rancher v2.15-head)" = "" ]
 }
 
+# --- ui_auto_serve_from_image / MUSTER_UI_OFFLINE=auto ----------------------
+# auto deploys as true and is reconsidered after the rollout. The decision is a
+# pure function of the image's build-time pin: a branch pin is the branch's own
+# UI, a released pin is not.
+
+@test "auto serves the image when the pin is a branch" {
+  ui_auto_serve_from_image v2.15-head master
+  ui_auto_serve_from_image v2.15-head release-2.15
+  # A release backend always serves its image whichever pin it holds.
+  ui_auto_serve_from_image v2.15.0 v2.14.2
+  ui_auto_serve_from_image 2.15.0 ''
+}
+
+@test "auto sends a head image with a released pin to the CDN" {
+  run ui_auto_serve_from_image v2.14-head v2.14.4
+  [ "$status" -ne 0 ]
+  run ui_auto_serve_from_image head v2.14.4
+  [ "$status" -ne 0 ]
+  run ui_auto_serve_from_image v2.14.6-abc-head v2.14.4
+  [ "$status" -ne 0 ]
+}
+
+@test "auto without a pin deploy as image, which is what the pod resolves later" {
+  image_env() {
+    case "$3" in
+      CATTLE_SERVER_VERSION) printf 'v2.14-c394de4-head' ;;
+      CATTLE_DASHBOARD_UI_VERSION) printf 'v2.14.4' ;;
+    esac
+  }
+  MUSTER_UI_OFFLINE=auto
+  [ "$(ui_source rancher/rancher v2.14-head)" = "image" ]
+}
+
+@test "auto with a branch pin serves the image the branch built" {
+  image_env() {
+    case "$3" in
+      CATTLE_SERVER_VERSION) printf 'v2.15-549c576-head' ;;
+      CATTLE_DASHBOARD_UI_VERSION) printf 'release-2.15' ;;
+    esac
+  }
+  MUSTER_UI_OFFLINE=auto
+  [ "$(ui_source rancher/rancher v2.15-head release-2.15)" = "image" ]
+}
+
+@test "auto with a released pin points at the branch path on the CDN" {
+  image_env() {
+    case "$3" in
+      CATTLE_SERVER_VERSION) printf 'v2.14-c394de4-head' ;;
+      CATTLE_DASHBOARD_UI_VERSION) printf 'v2.14.4' ;;
+    esac
+  }
+  MUSTER_UI_OFFLINE=auto
+  [ "$(ui_source rancher/rancher v2.14-head v2.14.4)" = "https://releases.rancher.com/dashboard/release-2.14/index.html" ]
+}
+
 # --- ui_pin_is_free ----------------------------------------------------------
 # What a `-head` image embeds is not always its own branch, so pinning is not
 # uniformly safe.

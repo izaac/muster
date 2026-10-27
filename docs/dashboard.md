@@ -23,6 +23,36 @@ The `--version` flag derives the branch automatically (`head` → `master`,
 `2.13` → `release-2.13`). Use `--dashboard-branch` to override with any
 branch name.
 
+## Choosing which UI is served
+
+Rancher serves either the UI inside its image or one fetched from the dashboard
+CDN, and `ui-offline-preferred` decides. `--ui-offline` sets that from the
+command line instead of patching the cluster afterwards:
+
+| Mode | What is served |
+|---|---|
+| `dynamic` (default) | the build decides: a release serves its image, a head build redirects to the CDN |
+| `true` | the UI inside the image, so a run is reproducible with the image digest |
+| `false` | the CDN, so a branch's continuously rebuilt UI is what is tested |
+| `auto` | deploy `true`, then read which UI the image was built with from the running pod |
+
+`auto` is for the head rows. A `-head` image does not imply a head UI: while a
+patch is in development the image embeds its branch's UI, but once a patch ships
+the pin is rewritten to the release tag for weeks afterwards. Serving that image
+would swap the branch UI for a released one and mask a regression, so when the
+running pod reports a released pin `muster` rolls the deployment to
+`CATTLE_UI_OFFLINE_PREFERRED=false` and the CDN's branch UI is served instead.
+The effective `ui-offline-preferred` setting is asserted after the rollout, so a
+mode that never reached the deployment fails loudly rather than silently serving
+the other UI.
+
+```sh
+muster up --dry-run --ui-offline auto --version v2.14-head
+```
+
+`--dashboard-dist` still wins: a mounted dist is served over the pod UI whatever
+`--ui-offline` says.
+
 ## Running tests
 
 muster emits a handoff that test frameworks consume directly; pick the format

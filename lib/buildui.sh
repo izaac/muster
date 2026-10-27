@@ -57,14 +57,20 @@ ui_engines_node() {
     | sed -E 's/.*"node":[[:space:]]*"([^"]*)".*/\1/'
 }
 
-# ui_resolve_branch <src> <tag> [override] - the dashboard branch to build.
-# An explicit override (from --dashboard-branch) wins and is used verbatim
-# after an existence check, honouring upstream's decoupling of the UI branch
-# from the image version (e.g. a 2.15 alpha backend tested with release-2.14
-# UI). Otherwise the branch is derived from the tag, falling back to master
-# when the derived release branch does not exist yet.
+# ui_resolve_branch <src> <tag> [override] [resolved] - the dashboard branch to
+# build.
+#
+# Precedence mirrors upstream setup-test-env.yml: an explicit override (from
+# --dashboard-branch) wins and is used verbatim after an existence check,
+# honouring upstream's decoupling of the UI branch from the image version (e.g. a
+# 2.15 alpha backend tested with release-2.14 UI); then a branch the resolver
+# named (DASHBOARD_BRANCH_RESOLVED), which is how a head build of a minor with no
+# release reaches master instead of a release branch that does not exist yet;
+# then the branch derived from the tag, falling back to master when the derived
+# release branch does not exist.
 ui_resolve_branch() {
-  local src="${1:?src required}" tag="${2:?tag required}" override="${3:-}" want
+  local src="${1:?src required}" tag="${2:?tag required}" override="${3:-}"
+  local resolved="${4:-${DASHBOARD_BRANCH_RESOLVED:-}}" want
   if [ -n "$override" ]; then
     if git -C "$src" rev-parse --verify --quiet "refs/remotes/origin/${override}" >/dev/null 2>&1 \
       || git -C "$src" rev-parse --verify --quiet "refs/heads/${override}" >/dev/null 2>&1; then
@@ -73,7 +79,11 @@ ui_resolve_branch() {
     fi
     die "--dashboard-branch '$override' does not exist in '$src'"
   fi
-  want="$(ui_branch_from_tag "$tag")"
+  if [ -n "$resolved" ]; then
+    want="$resolved"
+  else
+    want="$(ui_branch_from_tag "$tag")"
+  fi
   if [ "$want" != "master" ] \
     && ! git -C "$src" rev-parse --verify --quiet "refs/remotes/origin/${want}" >/dev/null 2>&1 \
     && ! git -C "$src" rev-parse --verify --quiet "refs/heads/${want}" >/dev/null 2>&1; then
@@ -111,7 +121,7 @@ buildui_run() {
   require_cmd git
 
   local branch dist cur
-  branch="$(ui_resolve_branch "$src" "$RANCHER_IMAGE_TAG" "${DASHBOARD_BRANCH:-}")"
+  branch="$(ui_resolve_branch "$src" "$RANCHER_IMAGE_TAG" "${DASHBOARD_BRANCH:-}" "${DASHBOARD_BRANCH_RESOLVED:-}")"
   dist="${DASHBOARD_DIST:-$src/dist}"
   cur="$(git -C "$src" rev-parse --abbrev-ref HEAD)"
 

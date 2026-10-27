@@ -42,13 +42,32 @@ plan_report() {
   plan_row provider "$PROVIDER"
   plan_row instance "$INSTANCE"
   plan_row external "$EXTERNAL"
-  if [ "${CHANNEL_SOURCE:-fixed}" = metadata ]; then
-    plan_row "channel source" "metadata  (branches-metadata.json decides registry and image)"
-  fi
+  case "${CHANNEL_SOURCE:-fixed}" in
+    fixed) ;;
+    metadata) plan_row "channel source" "metadata  (branches-metadata.json decides registry and image)" ;;
+    prime) plan_row "channel source" "prime  (newest release of the line; a head build when it has none)" ;;
+    prime-head) plan_row "channel source" "prime-head  (newest in-flight build; not reproducible)" ;;
+    prime-ga | community-ga) plan_row "channel source" "${CHANNEL_SOURCE}  (shipped releases only; the chart supplies the image tag)" ;;
+  esac
   plan_row channel "$RANCHER_REPO"
   plan_row "chart repo" "$RANCHER_CHART_URL"
   plan_row "chart version" "$RANCHER_CHART_VERSION"
-  plan_row image "${image}:${tag}"
+  if is_true "${RANCHER_IMAGE_TAG_FROM_CHART:-}"; then
+    plan_row image "${image}:${tag}  (from chart appVersion)"
+  else
+    plan_row image "${image}:${tag}"
+  fi
+  # Which branch the UI has to come from is not implied by the tag once a head
+  # build belongs to a minor with no release: 2.16.0-<sha>-head is built on
+  # master, not on a release-2.16 that does not exist yet.
+  if [ -n "${DASHBOARD_BRANCH_RESOLVED:-}" ]; then
+    plan_row "dashboard branch" "${DASHBOARD_BRANCH_RESOLVED}"
+  fi
+  # The registry the branch metadata named, which the post-deploy check compares
+  # against. Empty means Docker Hub.
+  if [ -n "${METADATA_REGISTRY:-}" ]; then
+    plan_row "metadata registry" "${METADATA_REGISTRY}"
+  fi
 
   # For a Prime row, how long ago the release was published is what decides
   # whether the row is worth running at all: a line whose newest release has gone
@@ -91,7 +110,15 @@ plan_report() {
   local ui_from
   if [ -n "${DASHBOARD_DIST:-}" ]; then
     plan_row ui "$DASHBOARD_DIST  (mounted over the pod)"
+  elif [ "${MUSTER_UI_OFFLINE:-}" = auto ]; then
+    # auto is the one mode that cannot be answered before the pod exists: the pin
+    # it reads is a build-time env var. Say what deploys and when it is decided.
+    plan_row "ui offline" "auto  (deploys true; reconsidered from the running pod)"
+    plan_row ui "decided after deploy  (CDN branch UI when a head image pins a released UI)"
   else
+    if [ -n "${MUSTER_UI_OFFLINE:-}" ]; then
+      plan_row "ui offline" "$MUSTER_UI_OFFLINE"
+    fi
     ui_from="$(ui_source "$image" "$tag")"
     case "$ui_from" in
       '') plan_row ui "unknown  (could not read the image config)" ;;

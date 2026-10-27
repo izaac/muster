@@ -114,6 +114,33 @@ teardown() {
   [ "$status" -ne 0 ]
 }
 
+# A head build of a minor with no release is built on master, so the resolver
+# names the branch explicitly. That name outranks the tag-derived one, which
+# would point at a release branch that does not exist yet.
+
+@test "ui_resolve_branch: a resolved branch outranks the tag derivation" {
+  _mkrepo
+  git -C "$REPO" branch release-2.15
+  [ "$(ui_resolve_branch "$REPO" v2.13-head '' release-2.15)" = "release-2.15" ]
+}
+
+@test "ui_resolve_branch: an explicit override outranks the resolved branch" {
+  _mkrepo
+  git -C "$REPO" branch release-2.15
+  [ "$(ui_resolve_branch "$REPO" v2.13-head release-2.14 release-2.15)" = "release-2.14" ]
+}
+
+@test "ui_resolve_branch: the resolved branch is read from the environment too" {
+  _mkrepo
+  DASHBOARD_BRANCH_RESOLVED=release-2.14
+  [ "$(ui_resolve_branch "$REPO" head)" = "release-2.14" ]
+}
+
+@test "ui_resolve_branch: a resolved branch that does not exist falls back to master" {
+  _mkrepo
+  [ "$(ui_resolve_branch "$REPO" v2.13-head '' release-2.99)" = "master" ]
+}
+
 # --- ui_engines_node: read the range out of a package.json -------------------
 
 @test "ui_engines_node: reads the declared node range" {

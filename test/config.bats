@@ -160,3 +160,35 @@ EOF
   [ "$status" -ne 0 ]
   [[ "$output" == *"unexpected argument"* ]]
 }
+
+# --- --ui-offline ------------------------------------------------------------
+
+@test "--ui-offline accepts the four modes" {
+  for mode in true false dynamic auto; do
+    run "$MUSTER" show --ui-offline "$mode"
+    [ "$status" -eq 0 ] || {
+      echo "rejected: $mode"
+      false
+    }
+    [ "$(field ui_offline "$output")" = "$mode" ]
+  done
+}
+
+@test "--ui-offline defaults to dynamic" {
+  run "$MUSTER" show
+  [ "$status" -eq 0 ]
+  [ "$(field ui_offline "$output")" = "<dynamic>" ]
+}
+
+@test "--ui-offline rejects an unknown mode" {
+  run "$MUSTER" show --ui-offline maybe
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unknown --ui-offline: maybe (true|false|dynamic|auto)"* ]]
+}
+
+@test "--ui-offline tells the env when flags are silent" {
+  export MUSTER_UI_OFFLINE=auto
+  run "$MUSTER" show
+  [ "$status" -eq 0 ]
+  [ "$(field ui_offline "$output")" = "auto" ]
+}

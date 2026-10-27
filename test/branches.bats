@@ -107,9 +107,10 @@ _parse_junk() { printf 'not json at all\n' | branches_parse master; }
   [ "$output" = "" ]
 }
 
-@test "branches_parse ignores keys outside the E2E block" {
+@test "branches_parse emits the milestone and ignores other non-E2E keys" {
   run _parse master
-  [[ "$output" != *"v2.16.0"* ]]
+  [[ "$output" == *"MILESTONE_VERSION=v2.16.0"* ]]
+  [[ "$output" != *"codeFreeze"* ]]
   [[ "$output" != *"main"* ]]
 }
 

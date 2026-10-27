@@ -13,7 +13,7 @@ _muster() {
     --password --image-tag --out --registry --airgap --insecure-registry \
     --mirror-all --mirror-extension --k3k-version --k3s-versions --from-cluster \
     --import-instance --management-instance --dashboard-src --dashboard-dist \
-    --dashboard-branch --node-bin --kubeconfig --rancher-host --config --dry-run \
+    --dashboard-branch --ui-offline --node-bin --kubeconfig --rancher-host --config --dry-run \
     --prefer-staging --help"
 
   case "$prev" in
@@ -26,11 +26,15 @@ _muster() {
       return
       ;;
     --channel-source)
-      mapfile -t COMPREPLY < <(compgen -W "fixed metadata prime" -- "$cur")
+      mapfile -t COMPREPLY < <(compgen -W "fixed metadata prime prime-head prime-ga community-ga" -- "$cur")
       return
       ;;
     --out)
       mapfile -t COMPREPLY < <(compgen -W "env cypress json" -- "$cur")
+      return
+      ;;
+    --ui-offline)
+      mapfile -t COMPREPLY < <(compgen -W "true false dynamic auto" -- "$cur")
       return
       ;;
     --config | --dashboard-src | --dashboard-dist | --kubeconfig | --node-bin)

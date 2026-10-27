@@ -22,7 +22,8 @@ MUSTER_BRANCHES_METADATA_URL="${MUSTER_BRANCHES_METADATA_URL:-https://raw.github
 # E2E facts for one branch as KEY=VALUE lines. Emits nothing for an unknown
 # branch, and omits any key the file does not carry.
 #
-# Keys: KUBE_VERSION, RANCHER_IMAGE, RANCHER_IMAGE_TAG, HELM_REPO_URL
+# Keys: KUBE_VERSION, RANCHER_IMAGE, METADATA_REGISTRY, RANCHER_IMAGE_TAG,
+# HELM_REPO_URL, MILESTONE_VERSION
 #
 # The file nests two levels below the branch (e2e.rancher-image.tag), so track
 # the object path by brace depth rather than trying to match a fixed shape.
@@ -30,7 +31,7 @@ branches_parse() {
   awk -v want="${1:?branch required}" '
     # Track the object path by name so a scalar can be attributed to the object
     # it sits in: depth 2 is "branches", 3 is the branch, 4 the section
-    # ("e2e"), 5 the subsection ("rancher-image", "kube", "helm").
+    # ("e2e", "milestone"), 5 the subsection ("rancher-image", "kube", "helm").
     match($0, /"[^"]+"[ \t]*:[ \t]*\{/) {
       k = substr($0, RSTART + 1)
       sub(/".*/, "", k)
@@ -39,8 +40,12 @@ branches_parse() {
     }
     /^[ \t]*[[{][ \t]*$/ { names[++depth] = ""; next }
     /^[ \t]*[]}]/ {
-      if (names[depth] == "rancher-image" && ns != "") {
-        print "RANCHER_IMAGE=" (reg == "" ? "" : reg "/") ns "/" nm
+      if (names[depth] == "rancher-image") {
+        # The registry is published on its own as well: the post-deploy check
+        # compares what the cluster runs against what the file said, and an
+        # empty value means Docker Hub, which leaves nothing to compare.
+        if (ns != "") print "RANCHER_IMAGE=" (reg == "" ? "" : reg "/") ns "/" nm
+        if (reg != "") print "METADATA_REGISTRY=" reg
         reg = ""; ns = ""; nm = ""
       }
       names[depth--] = ""
@@ -60,11 +65,74 @@ branches_parse() {
       sect = names[depth]
       if (sect == "kube" && k == "version") print "KUBE_VERSION=" v
       else if (sect == "helm" && k == "repo-url") print "HELM_REPO_URL=" v
+      else if (sect == "milestone" && k == "version") print "MILESTONE_VERSION=" v
       else if (sect == "rancher-image") {
         if (k == "registry") reg = v
         else if (k == "namespace") ns = v
         else if (k == "name") nm = v
         else if (k == "tag") print "RANCHER_IMAGE_TAG=" v
+      }
+    }
+  '
+}
+
+# milestone_chart_line <milestone_ver> - the X.Y release line a milestone names,
+# or nothing when it names none. Pure. The dashboard records the milestone as
+# vX.Y (sometimes vX.Y.Z), and the chart channels are keyed by X.Y.
+milestone_chart_line() {
+  local v="${1:-}"
+  v="${v#v}"
+  printf '%s\n' "$v" | grep -qE '^[0-9]+\.[0-9]+' || return 0
+  printf '%s' "$v" | cut -d. -f1,2
+}
+
+# branches_list_names - read branches-metadata.json on stdin and print one
+# branch key per line. Pure. Used to say which branches exist when a requested
+# one is missing.
+branches_list_names() {
+  awk '
+    match($0, /"[^"]+"[ \t]*:[ \t]*\{/) {
+      k = substr($0, RSTART + 1)
+      sub(/".*/, "", k)
+      names[++depth] = k
+      if (depth == 3 && names[2] == "branches") print k
+      next
+    }
+    /^[ \t]*[[{][ \t]*$/ { names[++depth] = ""; next }
+    /^[ \t]*[]}]/ { names[depth--] = ""; next }
+  '
+}
+
+# branches_for_milestone_line <line> - read branches-metadata.json on stdin and
+# print the first branch whose milestone.version names that release line, or
+# nothing. Pure.
+#
+# A head build's chart version names its line, but the branch that builds it is
+# not always release-X.Y: a minor with no release yet is still built on master.
+# The file records that mapping, so ask it rather than assuming, which also keeps
+# working through a branch cut.
+branches_for_milestone_line() {
+  awk -v line="${1:?line required}" '
+    match($0, /"[^"]+"[ \t]*:[ \t]*\{/) {
+      k = substr($0, RSTART + 1)
+      sub(/".*/, "", k)
+      names[++depth] = k
+      if (depth == 3 && names[2] == "branches") cur = k
+      next
+    }
+    /^[ \t]*[[{][ \t]*$/ { names[++depth] = ""; next }
+    /^[ \t]*[]}]/ { names[depth--] = ""; next }
+    match($0, /"[^"]+"[ \t]*:/) {
+      k = substr($0, RSTART + 1)
+      sub(/".*/, "", k)
+      v = substr($0, RSTART + RLENGTH)
+      gsub(/^[ \t]+|[ \t]+$|,$/, "", v)
+      gsub(/^"|"$/, "", v)
+      if (names[depth] != "milestone" || k != "version" || v == "") next
+      sub(/^v/, "", v)
+      if ((v == line || substr(v, 1, length(line) + 1) == line ".") && cur != "") {
+        print cur
+        exit
       }
     }
   '
@@ -121,12 +189,23 @@ branches_apply_k3s_image() {
   log_info "k3s image from dashboard branches-metadata: $K3S_IMAGE"
 }
 
-# metadata_chart_url <branch> [helm_repo_url] - the head chart channel for a
-# branch. The dashboard team's helm.repo-url key wins when it is filled in;
-# otherwise the optimus per-branch channel, which publishes that branch's
-# X.Y-<sha>-head chart. Pure: the fallback is a fixed URL shape.
+# metadata_chart_url <branch> [helm_repo_url] [milestone_ver] - the head chart
+# channel for a branch. A milestone.version the dashboard team recorded wins over
+# everything, because it is the release line the branch actually builds; then the
+# helm.repo-url key when it is filled in; otherwise the optimus per-branch
+# channel, which publishes that branch's X.Y-<sha>-head chart.
+#
+# Preferring the milestone mirrors resolve-channel.yml: the key and the milestone
+# disagree for master today (the key points at release-2.15 while master builds
+# 2.16), and the milestone is the statement of intent. Callers that pass no
+# milestone keep the old two-argument behaviour exactly.
 metadata_chart_url() {
-  local branch="${1:?branch required}" helmurl="${2:-}"
+  local branch="${1:?branch required}" helmurl="${2:-}" milestone="${3:-}" line
+  line="$(milestone_chart_line "$milestone")"
+  if [ -n "$line" ]; then
+    metadata_line_chart_url "$line"
+    return 0
+  fi
   if [ -n "$helmurl" ]; then
     printf '%s' "$helmurl"
     return 0

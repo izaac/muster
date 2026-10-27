@@ -1,14 +1,17 @@
 # Self-resolving the nightly matrix
 
-Two self-resolving modes cover the two kinds of row, so a job names only the
-line it wants and never a channel:
+Self-resolving sources cover every kind of row, so a job names only the line it
+wants and never a channel:
 
 | Row kind | Input | Resolves to |
 |---|---|---|
 | head | `--channel-source metadata --version v2.14-head` | the branch head, on whichever registry `branches-metadata.json` names |
-| Prime | `--channel-source prime --version 2.14` | the newest Prime release of the line, from whichever Prime channel holds it |
+| Prime | `--channel-source prime --version 2.14` | the newest Prime release of the line, from whichever Prime channel holds it; that line's newest head build when it has no release |
+| Prime, in flight | `--channel-source prime-head --version 2.15` | the line's newest Prime head build, whether or not it has released |
+| Prime GA | `--channel-source prime-ga --version v2.15` | the newest shipped Prime `X.Y.Z` in the GA channel; a full version pins exactly |
+| Community GA | `--channel-source community-ga --version v2.15` | the newest shipped Community `X.Y.Z` |
 
-`--repo` is ignored in both.
+`--repo` is ignored in all of them.
 
 `--channel-source metadata` makes muster pick the channel and image itself,
 instead of taking a fixed `--repo`. It reads the branch named by `--version` from
@@ -54,8 +57,9 @@ flips, muster follows with no change here. Read the flavour off the result with
 
 ## CI usage: the head rows and the Prime rows
 
-Two reproducible resolution inputs, one per row kind. Add `--dry-run` to resolve
-and print only; drop it to deploy.
+One resolution input per row kind. Add `--dry-run` to resolve and print only;
+drop it to deploy. Every kind except `prime-head` resolves to the same build on a
+re-run; `prime-head` is the in-flight one and says so.
 
 The nightly **head** rows read the file, so the same call resolves the same way
 until the file changes:
@@ -71,48 +75,137 @@ The **Prime** rows take the newest Prime release of a line. Which channel holds
 that changes as a line progresses, so name the line and let muster find it:
 
 ```sh
-muster up --dry-run --channel-source prime --version 2.15   # 2.15.1-rc2
-muster up --dry-run --channel-source prime --version 2.14   # 2.14.5-rc2
-muster up --dry-run --channel-source prime --version 2.13   # 2.13.9-rc2
+muster up --dry-run --channel-source prime --version 2.15   # 2.15.3-alpha1
+muster up --dry-run --channel-source prime --version 2.14   # 2.14.7-alpha1
+muster up --dry-run --channel-source prime --version 2.13   # 2.13.11-alpha1
 ```
 
 One command shape for every row. `--repo` is ignored, as in metadata mode.
 
-Naming the channel by hand instead is wrong in both directions, and the wrongness
-moves: a line with no rc yet is absent from `rancher-latest`, and asking
-`rancher-alpha` for a line that has reached rc quietly installs an alpha. Both
-flip as a line progresses, so a job that is correct today breaks or silently
-downgrades later with nothing in it having changed. The release team is also
-consolidating the Prime pre-release charts into a single channel, which moves the
-answer again; a row that names the line rather than the channel is unaffected.
+Naming the channel by hand instead is wrong in every direction, and the
+wrongness moves: a line with no rc yet is absent from `rancher-latest`, and
+asking `rancher-alpha` for a line that has reached rc quietly installs an alpha.
+Both flip as a line progresses, so a job that is correct today breaks or silently
+downgrades later with nothing in it having changed.
 
-**Release, not most recent.** The Prime channels also carry commit-named head
-charts, and those are usually the freshest thing published for a line:
+All three Prime channels are asked, and the highest pick wins:
+
+| Channel | URL |
+|---|---|
+| `rancher-prime-ga` | `charts.rancher.com/server-charts/prime` |
+| `rancher-latest` | `charts.optimus.rancher.io/server-charts/latest` |
+| `rancher-alpha` | `charts.optimus.rancher.io/server-charts/alpha` |
+
+The GA channel is not optional. `charts.optimus.rancher.io` stopped receiving
+final Prime releases at 2.14.3, so every newer GA lands only in
+`charts.rancher.com/server-charts/prime`, and asking the pre-release channels
+alone resolves "newest release" to a candidate for a version that already
+shipped. `rancher-prime-ga` rather than `rancher-prime` is deliberate: both serve
+the same charts, but the former resolves images to `registry.rancher.com`, which
+answers an anonymous pull, while the latter uses the gated `registry.suse.com`.
+
+The ordering is the release ladder, not the calendar: a final release outranks
+its own rc, an rc outranks an alpha, and any of them outranks a hotfix build of
+the same base. Ladder position is decided per version, so a *higher patch* still
+wins across rungs: with 2.15.1 shipped and 2.15.2-alpha1 open, the alpha is what
+`prime:2.15` resolves to. That is why `prime-ga` exists for post-release runs.
+
+**Release first, head build only as a fallback.** The Prime channels also carry
+commit-named head charts, and those are usually the freshest thing published for
+a line:
 
 | chart | published |
 |---|---|
-| `2.15.2-a90f264-head` | 2026-09-01 |
-| `2.15.1-rc2` | 2026-08-25 |
+| `2.15.3-d95e99e-head` | 2026-10-27 |
+| `2.15.2` | 2026-09-18 |
 
-A Prime row picks the rc anyway. A head chart is a new identity on every commit,
-so a row resolving to one would deploy a different build every run, which is the
-property a Prime row exists not to have. A release stays put. Both are Prime
-builds; the difference is release versus rolling. To run a head build
-deliberately, pin one: `--repo rancher-latest --version <the exact chart>`.
+A Prime row with a release available picks the release anyway. A head chart is a
+new identity on every commit, so a row resolving to one would deploy a different
+build every run, which is the property a Prime row exists not to have. A release
+stays put.
 
-The ordering is the release ladder, not the calendar: a final release outranks
-its own rc, and an rc outranks an alpha.
+The exception is a minor that has no release at all. A minor ships Community
+first, so it has Prime builds for months before its first Prime release; 2.16 has
+dozens of Prime head charts and no release. Those rows take the newest head build
+by publication date, because a commit sha carries no order, and revert to releases
+by themselves the day the minor ships:
 
-A line that has not released at all has no Prime row yet. muster says which
-charts it does carry, so the choice is visible rather than a dead end:
-
+```sh
+muster up --dry-run --channel-source prime --version 2.16
+# 2.16.0-79f63a6-head in rancher-latest (HEAD BUILD, differs on the next run)
 ```
-$ muster up --dry-run --channel-source prime --version 2.16
-[muster] ERROR the 2.16 line is in rancher-latest but has no release yet;
-         its newest head charts are: 2.16.0-9a46e2a-head 2.16.0-23449b8-head ...
-[muster] ERROR a Prime row takes a release, so pin a head chart on purpose:
-         --repo rancher-latest --version <one of the above>
+
+A head pick is not reproducible, which is why `prime:` only does it when it has
+no release to take. Pin one build on the fixed path when a result has to be
+repeatable:
+
+```sh
+muster up --dry-run --repo rancher-latest --version 2.16.0-79f63a6-head
 ```
+
+### `prime-head`: the in-flight build of a minor
+
+`prime:` falls back to a head build only when a minor has no release, which leaves
+the common case unreachable: development resumes on a branch the moment a patch
+ships, so every maintained minor has a head build ahead of its newest release.
+
+| Line | `prime:` | `prime-head:` |
+|---|---|---|
+| 2.14 | `2.14.7-alpha1` | `2.14.7-c0732c6-head` |
+| 2.15 | `2.15.3-alpha1` | `2.15.3-d95e99e-head` |
+| 2.16 | `2.16.0-<sha>-head` | `2.16.0-<sha>-head` |
+
+`prime-head:` skips the release pick and takes the head directly:
+
+```sh
+muster up --dry-run --channel-source prime-head --version 2.15
+```
+
+Use it to test what is in flight, before an rc opens. It is deliberately not
+reproducible: the same row resolves to a different commit tomorrow, so a result
+worth keeping has to record the resolved version rather than the row.
+
+### `prime-ga` and `community-ga`: a shipped release
+
+`prime:` walks the release ladder, so with 2.15.2 shipped it returns
+2.15.3-alpha1 the day that patch opens, and a head build for a minor with no
+release at all. That is right for the weekly rc and alpha pass and wrong for
+verifying a release that has just gone out.
+
+A GA row reads one edition's release channel and only final `X.Y.Z`, so the
+answer always shipped. It also accepts a full version, which `prime:` does not,
+so a run can pin the release it means to test:
+
+```sh
+muster up --dry-run --channel-source prime-ga --version v2.14       # 2.14.6
+muster up --dry-run --channel-source community-ga --version v2.13   # 2.13.3
+muster up --dry-run --channel-source prime-ga --version v2.14.6     # pinned exactly
+```
+
+| Kind | Channel read | URL |
+|---|---|---|
+| `prime-ga` | `rancher-prime-ga` | `charts.rancher.com/server-charts/prime` |
+| `community-ga` | `rancher-com-rc` | `releases.rancher.com/server-charts/latest` |
+
+The edition is part of the kind because the same version number is a different
+build on each side: chart 2.14.6 deploys
+`registry.rancher.com/rancher/rancher:v2.14.6` for Prime and
+`rancher/rancher:v2.14.6` for Community, and those images have different digests.
+
+A GA row does not set the image tag. A released chart names its own image in
+`appVersion`, so the chart is asked for by version and the install omits
+`rancherImageTag`, leaving the chart's value in place. `--dry-run` says
+`(from chart appVersion)` on the image row when that happened. The resolver also
+checks that `appVersion` agrees with the chart version (allowing for the leading
+`v`), because a chart that numbered its image differently would otherwise pull a
+tag that was never published and the pods would sit in `ImagePullBackOff`.
+
+`community-ga:` is a fixed-channel row in every other respect, so it can also be
+run by hand when the line is known to still publish Community releases.
+
+**Line matching is anchored.** A `2.1` request never answers with `2.15`, and a
+`2.12.5` request never answers with `2.12.50`; a version matches its line only at
+a separator. That is what makes `--version 2.14` safe to put in a job.
 
 A `metadata:` head row deploys from whichever registry the key names. Whether it
 reports Prime is a property of the build, and it is about to change: the release
@@ -138,7 +231,7 @@ keep it on the `prime:` and `community:` rows, whose channel fixes the answer.
 
 ## What every row resolves to
 
-Resolved live on 2026-09-01. The point of the table is the last column: a row's
+Resolved live on 2026-10-26. The point of the table is the last column: a row's
 build type is a property of the image, and two of these are about to change.
 
 ### Nightly: the `metadata:` rows
@@ -165,25 +258,42 @@ with no system charts.
 
 | Row | Channel | Chart | Image | Type |
 |---|---|---|---|---|
-| `--version 2.15` | `rancher-latest` | `2.15.1-rc2` | `stgregistry.suse.com/rancher/rancher:v2.15.1-rc2` | prime |
-| `--version 2.14` | `rancher-latest` | `2.14.5-rc2` | `stgregistry.suse.com/rancher/rancher:v2.14.5-rc2` | prime |
-| `--version 2.13` | `rancher-latest` | `2.13.9-rc2` | `stgregistry.suse.com/rancher/rancher:v2.13.9-rc2` | prime |
-| `--version 2.16` | none | none | none | no release; covered by `metadata:head` |
+| `--version 2.15` | `rancher-alpha` | `2.15.3-alpha1` | `stgregistry.suse.com/rancher/rancher:v2.15.3-alpha1` | prime |
+| `--version 2.14` | `rancher-alpha` | `2.14.7-alpha1` | `stgregistry.suse.com/rancher/rancher:v2.14.7-alpha1` | prime |
+| `--version 2.13` | `rancher-alpha` | `2.13.11-alpha1` | `stgregistry.suse.com/rancher/rancher:v2.13.11-alpha1` | prime |
+| `--version 2.16` | `rancher-latest` | `2.16.0-79f63a6-head` | `stgregistry.suse.com/rancher/rancher:v2.16.0-79f63a6-head` | prime, head build |
+
+2.13, 2.14 and 2.15 resolve to an alpha rather than the GA of the previous patch
+because the next patch is open: 2.14.6 has shipped, and 2.14.7-alpha1 outranks it
+on patch number. That is the release ladder doing its job for a pre-release pass.
+Post-release verification wants `prime-ga` instead:
+
+| Row | Channel | Chart | Image | Type |
+|---|---|---|---|---|
+| `prime-ga --version v2.15` | `rancher-prime-ga` | `2.15.2` | `registry.rancher.com/rancher/rancher:v2.15.2` | prime |
+| `prime-ga --version v2.14` | `rancher-prime-ga` | `2.14.6` | `registry.rancher.com/rancher/rancher:v2.14.6` | prime |
+| `community-ga --version v2.13` | `rancher-com-rc` | `2.13.3` | `rancher/rancher:v2.13.3` | community |
+
+The 2.16 row is a head build that resolves differently on the next run by design.
+`prime-head --version v2.15` takes `2.15.3-d95e99e-head` from `rancher-latest`,
+which `prime:` never picks while a release exists.
 
 Every Prime row reports the publication date of the release it picked, as a
 `released` line in `--dry-run` and as `RANCHER_CHART_RELEASED`, so a job can drop
-a row whose line has gone quiet without parsing output.
+a row whose line has gone quiet without parsing output. `prime-ga` and
+`community-ga` report it too, and the `image` row says `(from chart appVersion)`
+because the chart, not muster, chose the tag.
 
 ### `community:` rows, and why they drop
 
 | Row | Community chart | Newest Prime release | Community line |
 |---|---|---|---|
-| `v2.15-head` | `2.15.1` | `2.15.1-rc2` | level, still alive |
-| `v2.14-head` | `2.14.3` | `2.14.5-rc2` | two patches behind, stopped |
-| `v2.13-head` | `2.13.3` | `2.13.9-rc2` | six patches behind, stopped |
+| `v2.15-head` | `2.15.2` | `2.15.3-alpha1` | level, still alive |
+| `v2.14-head` | `2.14.3` | `2.14.7-alpha1` | four patches behind, stopped |
+| `v2.13-head` | `2.13.3` | `2.13.11-alpha1` | eight patches behind, stopped |
 
-Compare them with `--repo rancher-com-rc` against `--channel-source prime` for
-the same line. The `-head` image keeps rebuilding on both registries after the
+Compare them with `--repo rancher-com-rc` against `--channel-source prime` (or
+`prime-ga` for the shipped patch alone) for the same line. The `-head` image keeps rebuilding on both registries after the
 release line stops, so its build date proves nothing; the patch gap is the
 signal. Community head builds are also being disabled for the Prime-only lines,
 at which point these rows drop themselves on a missing image.
@@ -197,10 +307,19 @@ done
 for v in 2.16 2.15 2.14 2.13; do
   muster up --dry-run --channel-source prime --version "$v"
 done
+muster up --dry-run --channel-source prime-head --version v2.15
+for v in v2.15 v2.14 v2.13; do
+  muster up --dry-run --channel-source prime-ga --version "$v"
+  muster up --dry-run --channel-source community-ga --version "$v"
+done
 ```
 
 `--prefer-staging` is a date/patch probe for ad-hoc use and is deliberately
 **not** a CI input, because it is not reproducible day to day.
+
+The UI a row serves follows the image, and for a head row that is not always the
+branch: `--ui-offline auto` reconciles it after the pod starts and fails if the
+setting never took. See [Dashboard UI and tests](dashboard.md#choosing-which-ui-is-served).
 
 For fixed-channel selection and reading the flavour off an image, see
 [Channels and versions](versions.md).

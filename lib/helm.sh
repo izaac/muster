@@ -52,6 +52,19 @@ declare -gA MUSTER_REPO_IMAGE=(
   ["rancher-com-alpha"]=""
 )
 
+# The channels a `prime` row searches, in release-ladder order. The GA channel is
+# first and not optional: charts.optimus stopped receiving final Prime releases at
+# 2.14.3, so every newer GA lands only on charts.rancher.com. Pre-release channels
+# alone would resolve "newest release" to an rc of a version that has shipped.
+MUSTER_PRIME_CHANNELS=(rancher-prime-ga rancher-latest rancher-alpha)
+
+# A GA row reads one edition's release channel, and the kind names the edition
+# because the same version number is a different build on each side.
+declare -gA MUSTER_GA_CHANNEL=(
+  ["prime-ga"]="rancher-prime-ga"
+  ["community-ga"]="rancher-com-rc"
+)
+
 # Default cert-manager version and the SHA256 of its release CRD manifest,
 # pinned in source for a deterministic, reviewable supply chain. GitHub only
 # backfills release-asset digests for recent uploads, so older cert-manager
@@ -85,14 +98,101 @@ version_string() {
   printf '%s' "${v#v}"
 }
 
+# --- the release ladder ------------------------------------------------------
+# Ordering a chart version is not string ordering: 2.13.10 is newer than 2.13.9,
+# rc10 is newer than rc2, and a final release outranks its own release candidate.
+# One awk program states the ladder, so every caller orders versions the same way.
+#
+# Rank 3 is a final release, 2 an rc, 1 an alpha and 0 anything else at all: a
+# hotfix build, a commit-named head, an unrecognised suffix. A hotfix is a build
+# off to one side rather than a step towards the release, so it never outranks an
+# rc. The key is "maj.min.patch|rank|stage" so `sort -V` on its three fields gets
+# the true order (base version, then rung, then the stage number).
+_MUSTER_VERSION_AWK='
+function ladder(v,   m, base, pre, a, n, num) {
+  m = v
+  sub(/^v/, "", m)
+  base = m
+  pre = ""
+  if (index(m, "-") > 0) {
+    pre = substr(m, index(m, "-"))
+    base = substr(m, 1, index(m, "-") - 1)
+  }
+  if (base !~ /^[0-9]+[.][0-9]+([.][0-9]+)?$/) return "0.0.0|0|0"
+  n = split(base, a, ".")
+  base = a[1] "." a[2] "." (n >= 3 ? a[3] : "0")
+  if (pre == "") return base "|3|0"
+  num = pre
+  gsub(/[^0-9]/, "", num)
+  if (num == "") num = "0"
+  if (pre ~ /^-rc[.]?[0-9]+$/) return base "|2|" num
+  if (pre ~ /^-alpha[.]?[0-9]+$/) return base "|1|" num
+  return base "|0|0"
+}
+function rank_of(v,   parts) {
+  split(ladder(v), parts, "|")
+  return parts[2]
+}
+function on_line(v, line,   rest) {
+  sub(/^v/, "", v)
+  if (substr(v, 1, length(line)) != line) return 0
+  rest = substr(v, length(line) + 1)
+  return rest == "" || substr(rest, 1, 1) == "." || substr(rest, 1, 1) == "-"
+}
+'
+
+# version_line_re <line> - an ERE that matches a version only at a line boundary,
+# so 2.1 never swallows 2.15 and 2.12.5 never swallows 2.12.50. Pure.
+version_line_re() {
+  local line="${1:?line required}"
+  printf '^v?%s([.-]|$)' "$(printf '%s' "$line" | sed 's/[.]/\\./g')"
+}
+
+# highest_version - the ladder-highest version read on stdin, one version per
+# line. Pure; prints nothing for empty input.
+highest_version() {
+  awk "$_MUSTER_VERSION_AWK"' { print ladder($0) "|" $0 }' \
+    | sort -V -t'|' -k1,1 -k2,2 -k3,3 -k4,4 | tail -1 | cut -d'|' -f4- | tr -d '[:space:]'
+}
+
+# versions_on_line <line> - the versions read on stdin that belong to <line>,
+# anchored at a separator. Pure.
+versions_on_line() {
+  local line="${1:?line required}"
+  grep -E -- "$(version_line_re "$line")" || true
+}
+
+# chart_created_stamp <created> - an index timestamp trimmed for a report. Head
+# charts publish several times a day, so a date alone does not identify which
+# build ran; the index carries nanoseconds, which is more precision than a report
+# needs. Pure.
+chart_created_stamp() {
+  local text="${1:-}"
+  text="${text/T/ }"
+  case "$text" in
+    *' '*) printf '%s' "${text:0:16}" ;;
+    *) printf '%s' "${text:0:10}" ;;
+  esac
+}
+
+# chart_released_date <created> - the publication date alone, for the variable a
+# job reads to decide whether a line is still publishing. Pure.
+chart_released_date() {
+  local text="${1:-}"
+  printf '%s' "${text%%[T ]*}"
+}
+
 # resolve_chart_version <repo> <tag> <search_text> - pick the chart version from
 # the lines of `helm search repo <repo> --devel --versions`. Pure; prints the
-# version (empty if nothing matched). Based on the ansible shell, but the head
-# path uses `sort -V` instead of trusting helm's order: helm sorts pre-release
-# identifiers lexically, so 2.x-alpha9 ranks above 2.x-alpha14 ('9' > '1') and a
-# plain `head -1` would pick a stale alpha. Version sort gives the true newest.
+# version (empty if nothing matched). Based on the ansible shell, but every
+# ordering goes through the release ladder above: helm sorts pre-release
+# identifiers lexically, so 2.x-alpha9 outranks 2.x-alpha14 ('9' > '1') and a
+# plain `head -1` would pick a stale alpha.
+#
+# Line matching is anchored at a separator, so a 2.1 request never answers with
+# 2.15 and a 2.12.5 request never answers with 2.12.50.
 resolve_chart_version() {
-  local repo="$1" tag="$2" search="$3" dates="${4:-}" vs filter
+  local repo="$1" tag="$2" search="$3" dates="${4:-}" vs filter pick line versions
   vs="$(version_string "$tag")"
 
   # `helm search repo <name>` is a keyword search over every configured
@@ -103,16 +203,22 @@ resolve_chart_version() {
   search="$(printf '%s\n' "$search" | grep "^${repo}/rancher[[:space:]]" || true)"
 
   if [ "$tag" = "head" ]; then
-    local top
-    # A final release outranks its own pre-releases, which a bare sort -V does
-    # not do: it ranks 2.15.1-rc2 above 2.15.1 because the suffix makes the
-    # string longer. Rewriting the pre-release separator to "~", which sorts
-    # below the empty string, gives the release ladder. Same trick as
-    # version_ahead, and it leaves rc10 above rc2 and alpha14 above alpha9.
-    top="$(printf '%s\n' "$search" \
-      | awk '{ k=$2; gsub(/-/, "~", k); print k "\t" $2 }' \
-      | sort -V -k1,1 | tail -1 | cut -f2 | tr -d '[:space:]')"
-    resolve_head_pick "$top" "$dates"
+    # "The newest thing this channel builds": the newest line first, then that
+    # line's newest head build, falling back to the line's newest release for a
+    # channel that publishes no head chart at all.
+    versions="$(printf '%s\n' "$search" | awk '$2 ~ /^[0-9]/ { print $2 }')"
+    line="$(chart_release_line "$(printf '%s\n' "$versions" | highest_version)")"
+    [ -n "$line" ] || return 0
+    pick="$(newest_head_on_line "$line" "$dates" || true)"
+    if [ -z "$pick" ]; then
+      pick="$(printf '%s\n' "$versions" \
+        | versions_on_line "$line" | grep -- '-head$' | highest_version || true)"
+    fi
+    if [ -z "$pick" ]; then
+      pick="$(printf '%s\n' "$versions" \
+        | versions_on_line "$line" | grep -v -- '-head$' | highest_version || true)"
+    fi
+    printf '%s' "$pick"
     return 0
   fi
 
@@ -141,26 +247,23 @@ resolve_chart_version() {
     # moving the alphas into this one, and eventually the head charts too. An
     # alpha here today would be invisible to an -rc filter, and the line would
     # read as absent rather than pre-rc. Accept both shapes now: the channel
-    # carries no alpha yet, so this changes nothing until it does, and when a
-    # line holds both the ordering still prefers the rc (semver ranks a release
-    # candidate above an alpha, and so does a plain version sort).
+    # carries no alpha yet, so this changes nothing until it does, and on a line
+    # holding both the ladder still prefers the rc.
     rancher-latest) filter="-rc|-alpha" ;;
     *) filter="" ;;
   esac
 
+  # Anchor on the separator: vs is the line or the patch the tag names, never a
+  # prefix of a longer number. A line request deliberately excludes commit-named
+  # head charts: such a chart is a new identity on every commit, so a fixed input
+  # resolving to one would deploy a different build on every run. Pin one in full
+  # to run it on purpose, which the exact match above allows.
+  pick="$(printf '%s\n' "$search" | awk '$2 ~ /^[0-9]/ { print $2 }' \
+    | versions_on_line "$vs" | grep -v -- '-head$' || true)"
   if [ -n "$filter" ]; then
-    printf '%s\n' "$search" \
-      | grep "$vs" | grep -E -- "$filter" \
-      | awk '{print $2}' | sort -V | tail -1 | tr -d '[:space:]'
-  else
-    # No channel filter (prime / community stable / exact pin). A plain version
-    # like 2.13.3 must outrank its own pre-release/hotfix siblings (2.13.3-hotfix
-    # -751b.1), which a bare `sort -V` would rank higher. Prefix a stability key
-    # (1 = GA, 0 = pre-release) so GA wins for the same base, then sort by it.
-    printf '%s\n' "$search" | grep "$vs" \
-      | awk '{ v=$2; stab=(v ~ /-/) ? "0" : "1"; print stab "|" v }' \
-      | sort -V -t'|' -k1,1 -k2,2 | tail -1 | cut -d'|' -f2 | tr -d '[:space:]'
+    pick="$(printf '%s\n' "$pick" | grep -E -- "$filter" || true)"
   fi
+  printf '%s' "$(printf '%s\n' "$pick" | highest_version)"
 }
 
 # image_tag_normalize <tag> - the tag as the registry actually publishes it.
@@ -470,6 +573,11 @@ chart_release_line() {
   esac
 }
 
+# version_line_of <tag> - the X.Y line a tag names, or nothing for a name such
+# as "head". The same question chart_release_line answers, named for the callers
+# that ask it about an image tag rather than a chart version. Pure.
+version_line_of() { chart_release_line "${1:-}"; }
+
 # image_chart_line <image> <tag> - the X.Y line of the chart catalog a server
 # runs, read from CATTLE_CHART_DEFAULT_BRANCH in its config, on stdout.
 #
@@ -530,47 +638,74 @@ helm_check_chart_line() {
 # never touched. The image registries involved are anonymously pullable, so no
 # credentials are required. Mirrors the date logic in list-rancher-versions.
 
-# index_rancher_dates - read a chart index.yaml on stdin, emit one
-# "stab|version|created" row per rancher chart entry (stab: 1 GA, 0 pre-release,
-# so GA outranks same-base pre-releases under sort -V). Pure.
-index_rancher_dates() {
-  awk '
-    /^  [a-zA-Z0-9_-]+:$/ { sub(/:$/, "", $1); chart=$1; next }
-    /^  - apiVersion:/ {
-      if (chart == "rancher" && ver != "") {
-        stab = (ver ~ /-/) ? "0" : "1"; print stab "|" ver "|" created
-      }
-      ver=""; created=""; next
+# index_rancher_entries - read a chart index.yaml on stdin, emit one
+# "rank|version|created|appVersion" row per rancher chart entry (rank from the
+# release ladder: 3 GA, 2 rc, 1 alpha, 0 anything else). Pure.
+#
+# appVersion is kept because a shipped chart states the image tag it was built
+# with, and a GA row trusts the chart rather than its own version number.
+index_rancher_entries() {
+  awk "$_MUSTER_VERSION_AWK"'
+    function emit() {
+      if (chart != "rancher" || ver == "") return
+      printf "%s|%s|%s|%s\n", rank_of(ver), ver, created, app
     }
-    /^    version:/ { ver=$2;     gsub(/"/, "", ver) }
-    /^    created:/ { created=$2; gsub(/"/, "", created) }
-    END {
-      if (chart == "rancher" && ver != "") {
-        stab = (ver ~ /-/) ? "0" : "1"; print stab "|" ver "|" created
-      }
-    }
+    /^  [a-zA-Z0-9_-]+:$/ { sub(/:$/, "", $1); chart = $1; next }
+    /^  - apiVersion:/ { emit(); ver = ""; created = ""; app = ""; next }
+    /^    version:/ { ver = $2; gsub(/"/, "", ver) }
+    /^    created:/ { created = $2; gsub(/"/, "", created) }
+    /^    appVersion:/ { app = $2; gsub(/"/, "", app) }
+    END { emit() }
   '
 }
 
-# newest_release_version <version_regex> - read "stab|version|created" rows on
-# stdin and print "version|YYYY-MM-DD" of the highest RELEASE version matching
-# the regex, excluding -head dev charts (a -head chart is the branch head, not a
-# release). "Highest" is semver-correct: a final release outranks its own
-# pre-releases and an rc outranks an alpha, via the "-"->"~" rewrite that a plain
-# sort -V needs to order pre-releases; the stab-first ordering of the raw rows
-# would wrongly rank a lower GA above a higher rc. Pure.
+# index_rancher_dates - the three-column form of the above, for the callers that
+# only need the date and the order. Pure.
+index_rancher_dates() { index_rancher_entries | cut -d'|' -f1-3; }
+
+# index_chart_released <version> - the index timestamp for one chart version,
+# read as index rows on stdin. Pure.
+index_chart_released() {
+  local want="${1:?version required}"
+  awk -F'|' -v want="$want" '$2 == want { print $3; exit }'
+}
+
+# index_line_max_final_patch <line> - the highest final-release patch a line has
+# in one channel index, read as index rows on stdin, or -1 when it has none.
+# Pure.
+#
+# Pre-releases and head builds do not count: the question is what shipped, so a
+# candidate for a version that has not been released yet says nothing about
+# whether the line is still publishing Community releases.
+index_line_max_final_patch() {
+  awk -F'|' -v line="${1:?line required}" '
+    BEGIN { best = -1 }
+    $2 ~ /^[0-9]+[.][0-9]+[.][0-9]+$/ {
+      split($2, a, ".")
+      if (a[1] "." a[2] != line) next
+      if (a[3] + 0 > best) best = a[3] + 0
+    }
+    END { print best }
+  '
+}
+
+# newest_release_version <version_regex> - read ladder rows on stdin and print
+# "version|YYYY-MM-DD" of the highest RELEASE version matching the regex,
+# excluding -head dev charts (a -head chart is the branch head, not a release).
+# "Highest" is the release ladder: a final release outranks its own candidates,
+# an rc outranks an alpha, and both outrank a hotfix of the same base. Pure.
 newest_release_version() {
   local vre="$1" rows
-  rows="$(grep -E "^[01][|]${vre}" | grep -v -- '-head' || true)"
+  rows="$(grep -E "^[0-3][|]${vre}" | grep -v -- '-head' || true)"
   [ -n "$rows" ] || return 0
   printf '%s\n' "$rows" \
-    | awk -F'|' '{ k=$2; gsub(/-/, "~", k); print k "\t" $2 "\t" $3 }' \
-    | sort -V -k1,1 | tail -1 \
-    | awk -F'\t' '{ d=$3; sub(/T.*/, "", d); print $2 "|" d }'
+    | awk -F'|' "$_MUSTER_VERSION_AWK"' { print ladder($2) "|" $2 "|" $3 }' \
+    | sort -V -t'|' -k1,1 -k2,2 -k3,3 -k4,4 | tail -1 \
+    | awk -F'|' '{ d = $5; sub(/T.*/, "", d); print $4 "|" d }'
 }
 
 # newest_head_versions <version_regex> <n> - the newest <n> head charts matching
-# the regex, read as "stab|version|created" rows on stdin, newest first. Pure.
+# the regex, read as ladder rows on stdin, newest first. Pure.
 #
 # The counterpart to newest_release_version: those are what a Prime row resolves
 # to, these are what it deliberately will not, and naming them is what turns "no
@@ -578,31 +713,49 @@ newest_release_version() {
 # commit-named chart carries no ordering of its own.
 newest_head_versions() {
   local vre="$1" n="${2:-3}" rows
-  rows="$(grep -E "^[01][|]${vre}" | grep -- '-head' || true)"
+  rows="$(grep -E "^[0-3][|]${vre}" | grep -- '-head' || true)"
   [ -n "$rows" ] || return 0
   printf '%s\n' "$rows" \
     | awk -F'|' '{ print $3 "\t" $2 }' \
     | sort -r | head -"$n" | awk -F'\t' '{ print $2 }'
 }
 
-# version_ahead <a> <b> - true when version a is strictly newer than b. Uses
-# sort -V, but first rewrites the pre-release separator "-" to "~" so a final
-# release outranks its own pre-releases (2.14.4 is newer than 2.14.4-rc1) and an
-# rc outranks an alpha, which sort -V does not do on its own. An empty b counts
-# as older than anything. Pure.
+# version_ahead <a> <b> - true when version a is strictly newer than b, on the
+# release ladder. An empty b counts as older than anything. Pure.
 version_ahead() {
-  local a="$1" b="$2"
+  local a="${1:-}" b="${2:-}" ka kb newest
   [ "$a" = "$b" ] && return 1
-  local ka kb newest
-  ka="$(printf '%s' "$a" | sed 's/-/~/')"
-  kb="$(printf '%s' "$b" | sed 's/-/~/')"
-  newest="$(printf '%s\n%s\n' "$ka" "$kb" | sort -V | tail -1)"
+  [ -n "$a" ] || return 1
+  [ -n "$b" ] || return 0
+  ka="$(printf '%s\n' "$a" | awk "$_MUSTER_VERSION_AWK"' { print ladder($0) }')"
+  kb="$(printf '%s\n' "$b" | awk "$_MUSTER_VERSION_AWK"' { print ladder($0) }')"
+  [ "$ka" != "$kb" ] || return 1
+  newest="$(printf '%s\n%s\n' "$ka" "$kb" | sort -V -t'|' -k1,1 -k2,2 -k3,3 | tail -1)"
   [ "$newest" = "$ka" ]
 }
 
 # _date_epoch <YYYY-MM-DD> - seconds since epoch, GNU date first then BSD.
 _date_epoch() {
   date -d "$1" +%s 2>/dev/null || date -j -f '%Y-%m-%d' "$1" +%s 2>/dev/null
+}
+
+# date_age_days <yyyy-mm-dd> [now_yyyy-mm-dd] - whole days elapsed since <date>,
+# or -1 when <date> is empty or cannot be parsed. A future date yields a negative
+# number rather than -1, so a caller can tell "unparsable" from "not yet".
+# Deterministic given its arguments. Pure.
+date_age_days() {
+  local d="${1:-}" now="${2:-$(today)}" de te
+  [ -n "$d" ] || {
+    printf '%s' -1
+    return 0
+  }
+  de="$(_date_epoch "$d")" || de=""
+  te="$(_date_epoch "$now")" || te=""
+  if [ -z "$de" ] || [ -z "$te" ]; then
+    printf '%s' -1
+    return 0
+  fi
+  printf '%s' "$(((te - de) / 86400))"
 }
 
 # date_within_days <date> <today> <max_days> - true when <date> is no more than
@@ -642,8 +795,57 @@ _freshness_curl() {
   curl "${args[@]}" "$url" 2>/dev/null
 }
 
-# fetch_index_dates_url <chart_repo_url> - download an index.yaml and parse it.
-fetch_index_dates_url() { _freshness_curl "${1:?url required}/index.yaml" | index_rancher_dates; }
+# fetch_index_url <chart_repo_url> - the raw index.yaml a chart channel serves.
+#
+# A 200 returns the body. A 404 returns nothing and success: a retired or
+# never-published channel is a normal state for the Prime pre-release repos
+# during their consolidation, and a row that names a minor rather than a channel
+# should not care. Anything else fails, because a channel that is merely
+# unreachable might hold the newest chart, and resolving from the rest would
+# quietly deploy an older build.
+fetch_index_url() {
+  local base="${1:?url required}" out code body ca rc=0
+  local -a args=(-sSL --max-time 20 -w '\n%{http_code}')
+  ca="$(ca_bundle)"
+  [ -n "$ca" ] && args+=(--cacert "$ca")
+  out="$(curl "${args[@]}" "${base%/}/index.yaml" 2>/dev/null)" || rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  code="${out##*$'\n'}"
+  body="${out%$'\n'*}"
+  case "$code" in
+    200) printf '%s' "$body" ;;
+    404) : ;;
+    *) return 1 ;;
+  esac
+}
+
+# fetch_index_entries_url <chart_repo_url> - download an index.yaml and parse
+# every rancher entry into a ladder row. Returns the fetch status, so a caller
+# that must distinguish "channel gone" from "channel unreachable" can.
+#
+# The status is checked before anything is piped: relying on the caller's
+# pipefail would make a plain `x="$(fetch_index_entries_url ...)"` treat a failed
+# fetch as success whenever this file is sourced by something without `set -o
+# pipefail`, unit tests included.
+fetch_index_entries_url() {
+  local raw
+  raw="$(fetch_index_url "${1:?url required}")" || return 1
+  [ -n "$raw" ] || return 0
+  printf '%s\n' "$raw" | index_rancher_entries
+}
+
+# fetch_index_entries <channel> - the same, for a known channel key.
+fetch_index_entries() { fetch_index_entries_url "$(repo_url "$1")"; }
+
+# fetch_index_dates_url <chart_repo_url> - the three-column form, which is all
+# the freshness probe and the date ordering need. Checks the fetch status
+# explicitly for the same reason as fetch_index_entries_url.
+fetch_index_dates_url() {
+  local raw
+  raw="$(fetch_index_entries_url "${1:?url required}")" || return 1
+  [ -n "$raw" ] || return 0
+  printf '%s\n' "$raw" | cut -d'|' -f1-3
+}
 
 # fetch_index_dates <channel> - the same, for a known channel key.
 fetch_index_dates() { fetch_index_dates_url "$(repo_url "$1")"; }
@@ -783,6 +985,27 @@ metadata_pick_chart() {
   resolve_head_pick "$top" "$dates"
 }
 
+# metadata_newest_chart - the newest chart in a per-branch head channel, read as
+# index rows on stdin. Pure.
+#
+# Such a channel carries one chart at a time, always a commit-named head, and a
+# republish deletes the previous version rather than adding to it. Ordering is by
+# index date because a commit sha carries no order; a channel that has no dated
+# rows falls back to the release ladder so the answer is still deterministic.
+metadata_newest_chart() {
+  local entries pick
+  entries="$(cat)"
+  [ -n "$entries" ] || return 0
+  # The line is unknown here, so date-order every head row directly.
+  pick="$(printf '%s\n' "$entries" \
+    | awk -F'|' '$2 ~ /-head$/ && $3 != "" { print $3 "|" $2 }' \
+    | sort -r | head -1 | cut -d'|' -f2)"
+  if [ -z "$pick" ]; then
+    pick="$(printf '%s\n' "$entries" | cut -d'|' -f2 | highest_version)"
+  fi
+  printf '%s' "$pick"
+}
+
 # metadata_decide_chart_url <image> <tag> <metadata_url> - the chart channel to
 # actually use, on stdout.
 #
@@ -846,7 +1069,7 @@ metadata_decide_chart_url() {
 # identical from here on. K3s comes from the same file via branches_apply_k3s_image.
 helm_resolve_metadata() {
   local tag="${RANCHER_IMAGE_TAG:?RANCHER_IMAGE_TAG is required}"
-  local branch meta facts img itag helmurl url repo search
+  local branch meta facts img itag helmurl milestone reg url repo search
   branch="$(ui_branch_from_tag "$tag" 2>/dev/null || true)"
   [ -n "$branch" ] || die "channel-source metadata: cannot map '$tag' to a branch"
 
@@ -856,12 +1079,26 @@ helm_resolve_metadata() {
   img="$(printf '%s\n' "$facts" | sed -n 's/^RANCHER_IMAGE=//p' | head -1)"
   itag="$(printf '%s\n' "$facts" | sed -n 's/^RANCHER_IMAGE_TAG=//p' | head -1)"
   helmurl="$(printf '%s\n' "$facts" | sed -n 's/^HELM_REPO_URL=//p' | head -1)"
+  milestone="$(printf '%s\n' "$facts" | sed -n 's/^MILESTONE_VERSION=//p' | head -1)"
+  reg="$(printf '%s\n' "$facts" | sed -n 's/^METADATA_REGISTRY=//p' | head -1)"
   [ -n "$img" ] || die "channel-source metadata: branch '$branch' has no rancher-image in the metadata"
   [ -n "$itag" ] || itag="$tag"
 
-  local url_meta
-  url_meta="$(metadata_chart_url "$branch" "$helmurl")"
-  url="$(metadata_decide_chart_url "$img" "$itag" "$url_meta")"
+  # The milestone is the statement of intent: it is the release line the branch
+  # builds. The helm.repo-url key is a workaround for the fact that channels are
+  # always release-X.Y while the top branch is master, so it can point at a line
+  # the branch is not on. Prefer the milestone, and keep the image-derived line as
+  # an explicit escape hatch (MUSTER_CHART_LINE=image) for a branch whose image
+  # says something the file does not.
+  local url_meta mline
+  url_meta="$(metadata_chart_url "$branch" "$helmurl" "$milestone")"
+  mline="$(milestone_chart_line "$milestone")"
+  if [ -z "${MUSTER_CHART_LINE:-}" ] && [ -n "$mline" ]; then
+    url="$(metadata_line_chart_url "$mline")"
+    log_info "metadata: chart line ${mline} taken from the milestone (${url##*/})"
+  else
+    url="$(metadata_decide_chart_url "$img" "$itag" "$url_meta")"
+  fi
   repo="muster-metadata-${url##*/}"
   require_cmd helm
   retry 3 5 "helm repo add $repo" -- helm repo add "$repo" "$url" --force-update
@@ -878,6 +1115,12 @@ helm_resolve_metadata() {
   RANCHER_CHART_URL="$url"
   RANCHER_IMAGE="$img"
   RANCHER_IMAGE_TAG_RESOLVED="$itag"
+  # Empty means Docker Hub, which leaves the image unqualified and gives the
+  # post-deploy check nothing to compare. Published either way, so a job can
+  # assert the registry the file named.
+  METADATA_REGISTRY="$reg"
+  RANCHER_CHART_RELEASED="$(printf '%s\n' "$dates" | index_chart_released "$RANCHER_CHART_VERSION" || true)"
+  RANCHER_CHART_RELEASED="$(chart_released_date "$RANCHER_CHART_RELEASED")"
 
   # An explicit image override still wins, the same as the fixed path.
   if [ -n "${RANCHER_IMAGE_TAG_OVERRIDE:-}" ]; then
@@ -893,9 +1136,81 @@ helm_resolve_metadata() {
   fi
 
   export RANCHER_REPO RANCHER_CHART_URL RANCHER_IMAGE RANCHER_CHART_VERSION RANCHER_IMAGE_TAG_RESOLVED
+  export RANCHER_CHART_RELEASED METADATA_REGISTRY
   log_info "resolved (metadata): branch=$branch registry=${img%%/*} image=${img}:${itag} chart=$RANCHER_CHART_VERSION"
   helm_verify_image
   helm_check_chart_line
+}
+
+# helm_recheck_metadata_chart - re-read a metadata row's chart index now that the
+# cluster is up, and move to the chart that branch publishes now.
+#
+# A metadata row runs a floating image, vX.Y-head, which is re-pointed rather
+# than replaced, against a chart named for one commit. metadata-release-* keeps
+# exactly one chart and a republish deletes the previous version, so the chart
+# resolved before provisioning can be gone by the time k3s is up: production
+# build #1 resolved 2.14-d3617d27-head at 08:45 and the deploy failed at 08:53
+# with "not found in index". Re-reading also settles the quieter half of the same
+# mismatch, where the chart survives but names an older commit than the image
+# that is about to run.
+#
+# Best-effort in the same direction as the resolution: an unreadable index leaves
+# the earlier pick in place rather than failing a cluster that is already up.
+helm_recheck_metadata_chart() {
+  local entries pick
+  [ -n "${RANCHER_CHART_URL:-}" ] && [ -n "${RANCHER_REPO:-}" ] || return 0
+  entries="$(fetch_index_entries_url "$RANCHER_CHART_URL" 2>/dev/null || true)"
+  [ -n "$entries" ] || return 0
+
+  # Refresh helm's own cache too, so `helm upgrade --install --version` can see
+  # the new chart: the index this function read is not the one helm resolves from.
+  retry 3 5 "helm repo update $RANCHER_REPO" -- helm repo update "$RANCHER_REPO" >/dev/null 2>&1 || true
+
+  pick="$(printf '%s\n' "$entries" | metadata_newest_chart)"
+  [ -n "$pick" ] || return 0
+  [ "$pick" != "${RANCHER_CHART_VERSION:-}" ] || return 0
+
+  log_info "The ${RANCHER_REPO} chart moved while the cluster came up: ${RANCHER_CHART_VERSION} is gone, deploying ${pick} instead"
+  RANCHER_CHART_VERSION="$pick"
+  RANCHER_CHART_RELEASED="$(printf '%s\n' "$entries" | index_chart_released "$pick" || true)"
+  RANCHER_CHART_RELEASED="$(chart_released_date "$RANCHER_CHART_RELEASED")"
+  export RANCHER_CHART_VERSION RANCHER_CHART_RELEASED
+}
+
+# helm_warn_stopped_community - warn when a fixed Community row names a line that
+# has stopped publishing Community releases.
+#
+# The signal is the newest final Community release being behind the newest final
+# Prime one. A rebuilt -head image is not evidence to the contrary: head images
+# keep building on both registries after the release line stops, so their date
+# proves nothing. The patch gap does. Local runs are deliberate, so this warns
+# rather than overriding the caller's channel.
+#
+# Best-effort: an unreachable index says nothing rather than failing a run that
+# was otherwise fine.
+helm_warn_stopped_community() {
+  [ "${CHANNEL_SOURCE:-fixed}" = fixed ] || return 0
+  case "${RANCHER_REPO:-}" in
+    rancher-community | rancher-com-*) ;;
+    *) return 0 ;;
+  esac
+  local line comm prime comm_patch prime_patch
+  line="$(version_line_of "${RANCHER_IMAGE_TAG:-}")"
+  [ -n "$line" ] || return 0
+
+  comm="$(fetch_index_entries rancher-com-rc 2>/dev/null || true)"
+  prime="$(fetch_index_entries rancher-prime-ga 2>/dev/null || true)"
+  [ -n "$comm" ] && [ -n "$prime" ] || return 0
+
+  comm_patch="$(printf '%s\n' "$comm" | index_line_max_final_patch "$line")"
+  prime_patch="$(printf '%s\n' "$prime" | index_line_max_final_patch "$line")"
+  case "$comm_patch" in
+    '' | *[!0-9-]*) return 0 ;;
+  esac
+  [ "$comm_patch" -ge 0 ] || return 0
+  if [ "$prime_patch" -gt "$comm_patch" ]; then
+    log_warn "the ${line} line stopped at Community ${line}.${comm_patch} while Prime is at ${line}.${prime_patch}, so its Community head image may not have been rebuilt in months. Use --channel-source prime, or --channel-source metadata"
+  fi
 }
 
 # helm_search_charts <repo> - every published version of a repository's rancher
@@ -953,102 +1268,375 @@ helm_channel_line_hint() {
   newest="$(printf '%s\n' "$on_line" | sort -V | tail -3 | tr '\n' ' ')"
   printf 'the %s line is in %s but has no %s chart yet; it carries: %s\n' \
     "$vs" "$repo" "$filter" "$newest"
-  printf 'for the newest Prime release of %s try --channel-source prime --version %s, or --repo %s, or pin one of the above with --version\n' \
+  printf 'for the newest Prime build of %s try --channel-source prime --version %s, or --repo %s, or pin one of the above with --version\n' \
     "$vs" "$vs" "$alt"
 }
 
-# helm_prime_head_hint <minor> <version_regex> <channel...> - explain a line that
-# is published but carries no release, on stdout, or nothing.
+# prime_channel_pick <channel> <tag> <entries> [heads] - the newest chart for a
+# line in one Prime channel, as "channel|version|created", or nothing. Pure.
 #
-# 2.16 today is exactly this: thirty-six commit-named head charts in
-# rancher-latest and no rc or alpha at all. A Prime row cannot resolve to one,
-# because a head chart is a new identity on every commit and the row would deploy
-# a different build every run, so say what the line does carry and how to pin one
-# on purpose rather than only that nothing matched. Impure: reads each index.
-helm_prime_head_hint() {
-  local minor="${1:?minor required}" vre="${2:?version regex required}"
-  shift 2
-  local ch heads found=""
-  for ch in "$@"; do
-    heads="$(fetch_index_dates "$ch" 2>/dev/null | newest_head_versions "$vre" 3 || true)"
-    [ -n "$heads" ] || continue
-    printf 'the %s line is in %s but has no release yet; its newest head charts are: %s\n' \
-      "$minor" "$ch" "$(printf '%s\n' "$heads" | tr '\n' ' ')"
-    [ -n "$found" ] || found="$ch"
-  done
-  [ -n "$found" ] || return 0
-  printf 'a Prime row takes a release, so pin a head chart on purpose: --repo %s --version <one of the above>\n' \
-    "$found"
+# Releases and head builds are never mixed. With heads false this is the newest
+# release, ignoring head charts: a release stays put while a commit-named chart
+# is a new identity on every commit. With heads true it is the newest head chart,
+# ordered by publication date because a commit sha carries no order.
+prime_channel_pick() {
+  local channel="${1:?channel required}" tag="${2:?tag required}" entries="${3:-}"
+  local heads="${4:-false}" line raw ver created
+  [ -n "$entries" ] || return 0
+  line="$(chart_release_line "$(version_string "$tag")")"
+  [ -n "$line" ] || return 0
+
+  case "$heads" in
+    true)
+      raw="$(printf '%s\n' "$entries" | awk -F'|' -v line="$line" "$_MUSTER_VERSION_AWK"'
+        $2 != "" && on_line($2, line) && $2 ~ /-head$/ { print $3 "|" $2 }
+      ' | sort -t'|' -k1,1 -k2,2 | tail -1 || true)"
+      [ -n "$raw" ] || return 0
+      created="${raw%%|*}"
+      ver="${raw#*|}"
+      ;;
+    *)
+      raw="$(printf '%s\n' "$entries" | awk -F'|' -v line="$line" "$_MUSTER_VERSION_AWK"'
+        $2 != "" && on_line($2, line) && $2 !~ /-head$/ { print ladder($2) "|" $2 "|" $3 }
+      ' | sort -V -t'|' -k1,1 -k2,2 -k3,3 -k4,4 | tail -1 || true)"
+      [ -n "$raw" ] || return 0
+      ver="$(printf '%s' "$raw" | cut -d'|' -f4)"
+      created="$(printf '%s' "$raw" | cut -d'|' -f5)"
+      ;;
+  esac
+
+  printf '%s|%s|%s' "$channel" "$ver" "$(chart_created_stamp "$created")"
 }
 
-# helm_resolve_prime - pick the channel for a Prime row, rather than making the
-# caller pick it.
+# ga_channel_pick <channel> <tag> <entries> - the newest shipped release for a
+# minor in one edition's release channel, as "channel|version|created|appVersion",
+# or nothing. Pure.
 #
-# A Prime row means "the newest Prime release of this line", and that lives in
-# whichever of the two Prime channels currently has it: an rc in rancher-latest,
-# or, for a line that has not reached rc yet, an alpha in rancher-alpha. Naming
-# one channel by hand is wrong in both directions. Asking rancher-latest for 2.15
-# today fails outright, and asking rancher-alpha for 2.14 quietly installs an
-# alpha when an rc exists. Worse, both answers change as a line progresses, so a
-# job that is correct today breaks or silently downgrades later without anything
-# in it changing.
-#
-# Release, not most recent. rancher-latest also carries commit-named head charts,
-# and for 2.15 those are the freshest thing published, so "newest" by date would
-# pick one. They are deliberately not eligible: a head chart is a new identity on
-# every commit, so a row resolving to one would deploy a different build each run
-# and stop being the fixed input a Prime row exists to be. An alpha stays put
-# until the next alpha. Pinning a head chart is still available for ad-hoc use,
-# with --repo rancher-latest --version <the exact chart>.
-#
-# Rewrites RANCHER_REPO in place and returns, leaving the normal resolution to
-# run against the channel that was chosen.
-helm_resolve_prime() {
-  local tag="${RANCHER_IMAGE_TAG:?RANCHER_IMAGE_TAG is required}"
-  tag_is_bare_minor "$tag" \
-    || die "--channel-source prime needs a release line, such as --version 2.14 (got '$tag')"
+# Separate from prime_channel_pick because a post-release run asks a different
+# question. "Newest Prime chart" walks the release ladder, so it answers with a
+# candidate the moment the next patch opens: with 2.15.1 shipped, a 2.15.2-alpha1
+# outranks it on patch and a row asking for 2.15 would quietly deploy an alpha.
+# Here only X.Y.Z counts, so the answer always shipped. A tag naming a full
+# version is honoured exactly, which lets a run pin the release it means to test.
+# Anything else is not a request this kind can answer: a pre-release tag such as
+# 2.14.3-rc1 must not be stripped down to a line request, because that would
+# answer with a different chart than the one asked for.
+ga_channel_pick() {
+  local channel="${1:?channel required}" tag="${2:?tag required}" entries="${3:-}"
+  local clean line raw
+  [ -n "$entries" ] || return 0
+  clean="$(printf '%s' "$tag" | sed 's/^v//')"
 
-  local minor vre pick
-  minor="$(version_string "$tag")"
-  vre="$(printf '%s' "$minor" | sed 's/\./[.]/g')[.]"
-  pick="$(freshness_newest_release "$vre" rancher-latest rancher-alpha)"
-  if [ -z "$pick" ]; then
-    local hint
-    while IFS= read -r hint; do
-      [ -n "$hint" ] && log_err "$hint"
-    done < <(helm_prime_head_hint "$minor" "$vre" rancher-latest rancher-alpha)
-    die "--channel-source prime: no Prime release for the ${minor} line in rancher-latest or rancher-alpha"
+  if printf '%s\n' "$clean" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    raw="$(printf '%s\n' "$entries" \
+      | awk -F'|' -v want="$clean" '$2 == want { print $2 "|" $3 "|" $4; exit }')"
+  elif printf '%s\n' "$clean" | grep -qE '^[0-9]+\.[0-9]+$'; then
+    line="$clean"
+    raw="$(printf '%s\n' "$entries" | awk -F'|' -v line="$line" "$_MUSTER_VERSION_AWK"'
+      $2 != "" && on_line($2, line) && $2 ~ /^[0-9]+[.][0-9]+[.][0-9]+$/ {
+        print ladder($2) "|" $2 "|" $3 "|" $4
+      }
+    ' | sort -V -t'|' -k1,1 -k2,2 -k3,3 -k4,4 | tail -1 | cut -d'|' -f4-6 || true)"
+  else
+    return 1
   fi
 
-  local ver channel date rest
-  ver="${pick%%|*}"
-  rest="${pick#*|}"
-  date="${rest%%|*}"
-  channel="${pick##*|}"
-  RANCHER_REPO="$channel"
+  [ -n "$raw" ] || return 0
+  printf '%s|%s' "$channel" "$raw"
+}
+
+# best_channel_pick <heads> <pick...> - the highest of the per-channel picks, as
+# "channel|version|created|appVersion", or nothing. Pure.
+#
+# Ordering is the release ladder for releases, so a final release outranks its
+# own candidate and a candidate outranks an alpha: that is what makes a line
+# which has reached rc resolve to the rc while a line that has not still resolves
+# to its newest alpha rather than failing. Head builds are ordered by date, since
+# a commit sha carries no order.
+best_channel_pick() {
+  local heads="${1:-false}"
+  shift
+  [ "$#" -gt 0 ] || return 0
+  if [ "$heads" = true ]; then
+    printf '%s\n' "$@" | sort -t'|' -k3,3 -k2,2 | tail -1
+  else
+    printf '%s\n' "$@" \
+      | awk -F'|' "$_MUSTER_VERSION_AWK"' { print ladder($2) "|" $0 }' \
+      | sort -V -t'|' -k1,1 -k2,2 -k3,3 -k5,5 | tail -1 | cut -d'|' -f4-
+  fi
+}
+
+# helm_resolve_prime - pick the channel and chart for a Prime row, rather than
+# making the caller pick it.
+#
+# A Prime row means "the newest Prime release of this line", and that lives in
+# whichever of the three Prime channels currently has it: the GA in
+# rancher-prime-ga once it ships, an rc in rancher-latest before that, or an
+# alpha in rancher-alpha for a line that has not reached rc. Naming one channel
+# by hand is wrong in every direction and the wrongness moves as a line
+# progresses, so all three are asked and the highest pick wins. The GA channel is
+# not optional: charts.optimus stopped receiving final releases at 2.14.3, so the
+# pre-release channels alone resolve "newest release" to an rc of a version that
+# has shipped.
+#
+# Release first, head build only as a fallback. rancher-latest also carries
+# commit-named head charts, and they are usually the freshest thing published for
+# a line, but a head chart is a new identity on every commit: a row resolving to
+# one would deploy a different build every run. A minor ships Community first, so
+# it has Prime builds for months before its first Prime release, and refusing
+# those left the newest minor with no Prime coverage at all. So a minor with a
+# release always takes it, and only a minor with none falls back to its newest
+# head build. That reverts by itself the day the minor ships.
+#
+# `prime-head` is the same fallback without the release pick: it always takes the
+# newest in-flight build, which is the point of that kind. Both share one code
+# path, so they agree on the newest minor for the same reason.
+#
+# Rewrites RANCHER_REPO and RANCHER_IMAGE_TAG, leaving the normal resolution to
+# run against the channel and exact chart that were chosen.
+helm_resolve_prime() {
+  local kind="${CHANNEL_SOURCE:-prime}"
+  local tag="${RANCHER_IMAGE_TAG:?RANCHER_IMAGE_TAG is required}"
+  tag_is_bare_minor "$tag" \
+    || die "--channel-source ${kind} requires a minor line such as v2.14 (got '$tag')"
+
+  local minor ch entries i heads=false pick="" channel_list rc
+  local -a channels=() indexes=() picks=()
+  minor="$(version_string "$tag")"
+  channel_list="$(printf '%s, ' "${MUSTER_PRIME_CHANNELS[@]}" | sed 's/, $//')"
+
+  # A channel that answers 404 is skipped rather than failing the row: the
+  # release team is retiring rancher-alpha, and a row that names a minor rather
+  # than a channel should not care. A channel that is unreachable is different:
+  # it might hold the newest chart, and resolving from the rest would quietly
+  # deploy an older build, so that fails the row here.
+  for ch in "${MUSTER_PRIME_CHANNELS[@]}"; do
+    rc=0
+    entries="$(fetch_index_entries "$ch" 2>/dev/null)" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      die "--channel-source ${kind}: failed to fetch chart index from ${ch} ($(repo_url "$ch")/index.yaml)"
+    fi
+    [ -n "$entries" ] || continue
+    channels+=("$ch")
+    indexes+=("$entries")
+  done
+  [ "${#channels[@]}" -gt 0 ] \
+    || die "--channel-source ${kind}: none of ${channel_list} served a chart index (every channel answered 404 or was empty); the Prime channels have moved or been retired"
+
+  if [ "$kind" = prime ]; then
+    for i in "${!channels[@]}"; do
+      pick="$(prime_channel_pick "${channels[i]}" "$minor" "${indexes[i]}" false || true)"
+      [ -n "$pick" ] && picks+=("$pick")
+    done
+  fi
+  if [ "${#picks[@]}" -gt 0 ]; then
+    pick="$(best_channel_pick false "${picks[@]}")"
+  else
+    pick=""
+  fi
+
+  if [ -z "$pick" ]; then
+    heads=true
+    picks=()
+    for i in "${!channels[@]}"; do
+      pick="$(prime_channel_pick "${channels[i]}" "$minor" "${indexes[i]}" true || true)"
+      [ -n "$pick" ] && picks+=("$pick")
+    done
+    if [ "${#picks[@]}" -gt 0 ]; then
+      pick="$(best_channel_pick true "${picks[@]}")"
+    else
+      pick=""
+    fi
+  fi
+
+  if [ -z "$pick" ]; then
+    if [ "$kind" = prime-head ]; then
+      die "--channel-source prime-head: no Prime head build for the ${minor} line in ${channel_list}; that minor has no in-flight build published yet"
+    fi
+    die "--channel-source prime: no Prime release or head build for the ${minor} line in ${channel_list}; that minor is not published to a Prime channel yet"
+  fi
+
+  local ver created date
+  RANCHER_REPO="$(printf '%s' "$pick" | cut -d'|' -f1)"
+  ver="$(printf '%s' "$pick" | cut -d'|' -f2)"
+  created="$(printf '%s' "$pick" | cut -d'|' -f3)"
+  date="$(chart_released_date "$created")"
+
+  # Staleness gate. A Prime row whose newest chart is months old is testing a
+  # line that has stopped publishing there, and a green result would say nothing
+  # about anything current. Failing costs nothing, since resolution runs before
+  # provisioning. Set MUSTER_PRIME_MAX_AGE_DAYS=0 to accept any age.
+  local max_age age
+  max_age="${MUSTER_PRIME_MAX_AGE_DAYS:-60}"
+  case "$max_age" in
+    '' | *[!0-9]*) max_age=60 ;;
+  esac
+  age="$(date_age_days "$date")"
+  if [ "$max_age" -gt 0 ] && [ "$age" -ge 0 ] && [ "$age" -gt "$max_age" ]; then
+    die "--channel-source ${kind}: newest ${minor} chart in Prime is ${ver}, published ${date} (${age} days ago, limit ${max_age}). That line has stopped publishing to Prime, so this row would test frozen software. Raise MUSTER_PRIME_MAX_AGE_DAYS (or set 0) to run it anyway"
+  fi
+
   # The chart is named exactly, so the channel's own shape filter cannot exclude
-  # it: that is what lets an alpha be selected from rancher-alpha and an rc from
-  # rancher-latest through one code path.
+  # it: that is what lets an alpha be selected from rancher-alpha, an rc from
+  # rancher-latest and a GA from rancher-prime-ga through one code path.
   RANCHER_IMAGE_TAG="$ver"
-  # When the release was published, which is the only thing a caller needs to
+  # When the chart was published, which is the only thing a caller needs to
   # decide whether the row is worth running: a Prime row whose newest release has
   # gone quiet is testing a line that has stopped. Exported rather than only
   # logged so a job can read it instead of parsing output.
   RANCHER_CHART_RELEASED="$date"
-  export RANCHER_CHART_RELEASED
-  log_info "prime: newest ${minor} release is ${ver} in ${channel}, published ${date} (head builds are not releases)"
+  if [ "$heads" = true ]; then
+    RANCHER_PRIME_HEAD_PICK=1
+    # A head pick rewrites the tag to a chart version, and the dashboard branch
+    # is normally read off that tag: for a release 2.15.1 belongs to
+    # release-2.15. For a head build of a minor with no release it is wrong,
+    # because that minor is still built on master and has no release branch cut
+    # yet: 2.16.0-<sha>-head would send the run to a release-2.16 that does not
+    # exist. The metadata file says which branch builds which minor, so ask it
+    # rather than assuming. Best-effort: offline, or with no answer, the
+    # mechanical mapping is still better than nothing.
+    local meta dbranch=""
+    DASHBOARD_BRANCH_RESOLVED=""
+    if command -v branches_fetch >/dev/null 2>&1; then
+      meta="$(branches_fetch 2>/dev/null || true)"
+      if [ -n "$meta" ]; then
+        dbranch="$(printf '%s' "$meta" | branches_for_milestone_line "$minor" 2>/dev/null || true)"
+      fi
+    fi
+    DASHBOARD_BRANCH_RESOLVED="${dbranch:-release-${minor}}"
+    export DASHBOARD_BRANCH_RESOLVED
+  else
+    RANCHER_PRIME_HEAD_PICK=0
+  fi
+  export RANCHER_REPO RANCHER_IMAGE_TAG RANCHER_CHART_RELEASED RANCHER_PRIME_HEAD_PICK
+
+  if [ "$heads" = true ]; then
+    log_info "prime: newest ${minor} HEAD BUILD is ${ver} in ${RANCHER_REPO}, published ${created} (no Prime release for this minor yet, so this will differ on the next run); it is built on dashboard branch ${DASHBOARD_BRANCH_RESOLVED}"
+  else
+    log_info "prime: newest ${minor} release is ${ver} in ${RANCHER_REPO}, published ${created} (head builds are used only when a minor has no release)"
+  fi
+}
+
+# helm_resolve_ga - resolve a shipped release for a post-release row.
+#
+# A prime: row walks the release ladder, so with 2.15.1 shipped it returns
+# 2.15.2-alpha1 the day that patch opens, and a head build for a minor with no
+# release at all. That is right for the weekly rc and alpha pass and wrong for
+# verifying a release that just went out. A GA row reads one edition's release
+# channel and only final X.Y.Z, so the answer always shipped, and it accepts a
+# full version as well, which is how a run pins the release it means to test.
+#
+# Neither the image tag nor the registry is overridden beyond naming the chart:
+# a released chart supplies its own image through appVersion, so the chart is
+# asked for by version and the image tag follows it. Setting the image tag from
+# the chart version instead asks Docker Hub for a tag that was never published.
+helm_resolve_ga() {
+  local kind="${CHANNEL_SOURCE:?CHANNEL_SOURCE is required}"
+  local channel="${MUSTER_GA_CHANNEL[$kind]:-}"
+  [ -n "$channel" ] || die "unknown --channel-source '$kind' for a GA row"
+  local tag="${RANCHER_IMAGE_TAG:?RANCHER_IMAGE_TAG is required}"
+  local entries pick ver created date app want
+
+  entries="$(fetch_index_entries "$channel" 2>/dev/null || true)"
+  [ -n "$entries" ] \
+    || die "--channel-source ${kind}: ${channel} served no chart index; the GA channel may have moved"
+
+  # Only two shapes name a shipped release: a minor to walk, or one version to
+  # take exactly. A pre-release tag names neither, and stripping its suffix into
+  # a line request would answer with a different chart than the one asked for.
+  want="$(printf '%s' "$tag" | sed 's/^v//')"
+  printf '%s\n' "$want" | grep -qE '^[0-9]+\.[0-9]+(\.[0-9]+)?$' \
+    || die "--channel-source ${kind} takes a minor line such as v2.15 or a full version such as v2.15.1 (got '$tag')"
+
+  pick="$(ga_channel_pick "$channel" "$tag" "$entries" || true)"
+  if [ -z "$pick" ]; then
+    if printf '%s\n' "$want" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+      die "--channel-source ${kind}: ${channel} publishes no final release ${want}. A GA row takes a shipped X.Y.Z chart, taken exactly when a full version is named; use --channel-source prime for a pre-release or head build"
+    fi
+    die "--channel-source ${kind}: ${channel} publishes no final release on the ${want} line. That minor has no shipped chart in this edition; use --channel-source prime for a pre-release or head build"
+  fi
+
+  ver="$(printf '%s' "$pick" | cut -d'|' -f2)"
+  created="$(printf '%s' "$pick" | cut -d'|' -f3)"
+  app="$(printf '%s' "$pick" | cut -d'|' -f4)"
+  date="$(chart_released_date "$created")"
+
+  # The deploy names the image tag, so it, not the chart, decides which image is
+  # pulled. That is only safe while it matches the chart's own appVersion: a
+  # chart that numbered its image differently would pull a tag that was never
+  # published and the pods would sit in ImagePullBackOff with nothing naming the
+  # cause. The value is taken as written, so it must be exactly v<version>; an
+  # empty appVersion is tolerated, and nothing else is.
+  if [ -n "$app" ]; then
+    [ "$app" = "v$ver" ] \
+      || die "--channel-source ${kind}: chart ${ver} declares appVersion '${app}', but this row reports having deployed v${ver}. The chart numbers its image differently from its own version"
+  fi
+
+  RANCHER_REPO="$channel"
+  RANCHER_CHART_URL="$(repo_url "$channel")"
+  RANCHER_IMAGE="$(repo_image "$channel")"
+  RANCHER_CHART_VERSION="$ver"
+  RANCHER_IMAGE_TAG="v$ver"
+  RANCHER_IMAGE_TAG_RESOLVED="v$ver"
+  RANCHER_CHART_RELEASED="$date"
+  RANCHER_IMAGE_TAG_FROM_CHART=1
+  # An explicit --image-tag is still an override, and then the tag must be sent:
+  # the chart's appVersion is no longer what the run means to test.
+  if [ -n "${RANCHER_IMAGE_TAG_OVERRIDE:-}" ]; then
+    local ovr="$RANCHER_IMAGE_TAG_OVERRIDE"
+    case "$ovr" in
+      */*)
+        RANCHER_IMAGE="${ovr%:*}"
+        RANCHER_IMAGE_TAG_RESOLVED="${ovr##*:}"
+        ;;
+      *) RANCHER_IMAGE_TAG_RESOLVED="$ovr" ;;
+    esac
+    RANCHER_IMAGE_TAG_FROM_CHART=0
+    log_info "image overridden: ${RANCHER_IMAGE}:${RANCHER_IMAGE_TAG_RESOLVED} (chart stays $RANCHER_CHART_VERSION)"
+  fi
+
+  require_cmd helm
+  retry 3 5 "helm repo add $channel" -- \
+    helm repo add "$channel" "$RANCHER_CHART_URL" --force-update
+  retry 3 5 "helm repo update" -- helm repo update "$channel"
+
+  export RANCHER_REPO RANCHER_CHART_URL RANCHER_IMAGE RANCHER_CHART_VERSION \
+    RANCHER_IMAGE_TAG RANCHER_IMAGE_TAG_RESOLVED RANCHER_CHART_RELEASED \
+    RANCHER_IMAGE_TAG_FROM_CHART
+  log_info "resolved (${kind}): ${ver} in ${channel}, published ${date} (shipped releases only, so a newer rc, alpha or head build is deliberately ignored)"
+  helm_verify_image
+  helm_check_chart_line
 }
 
 # helm_resolve_version - orchestrate the impure resolution against a live helm.
 # Validates RANCHER_REPO, adds/updates the repo, runs the search, and exports:
 #   RANCHER_CHART_URL RANCHER_IMAGE RANCHER_CHART_VERSION RANCHER_IMAGE_TAG_RESOLVED
+# It also exports RANCHER_CHART_RELEASED when the index could be read, which is
+# what lets a job drop a row whose line has stopped publishing.
 helm_resolve_version() {
-  if [ "${CHANNEL_SOURCE:-fixed}" = metadata ]; then
-    helm_resolve_metadata
-    return
-  fi
-  [ "${CHANNEL_SOURCE:-fixed}" = prime ] && helm_resolve_prime
-  freshness_maybe_promote
+  case "${CHANNEL_SOURCE:-fixed}" in
+    metadata)
+      helm_resolve_metadata
+      return
+      ;;
+    # A GA row reads the index and the chart alone, so there is no helm search to
+    # do afterwards: the chart is named by version and supplies its own image tag.
+    prime-ga | community-ga)
+      helm_resolve_ga
+      return
+      ;;
+    prime | prime-head)
+      # A resolved Prime pick is already an exact chart version, so the keep-fresh
+      # probe must not run afterwards: it would rewrite the pick.
+      helm_resolve_prime
+      ;;
+    *)
+      freshness_maybe_promote
+      # A fixed Community row keeps whatever channel it was given, so warn rather
+      # than override when that line has stopped publishing there.
+      helm_warn_stopped_community
+      ;;
+  esac
   local repo="${RANCHER_REPO:?RANCHER_REPO is required}"
   local tag="${RANCHER_IMAGE_TAG:?RANCHER_IMAGE_TAG is required}"
   repo_valid "$repo" || die "unknown RANCHER_REPO '$repo' (valid: $(repo_keys))"
@@ -1108,7 +1696,19 @@ helm_resolve_version() {
     esac
     log_info "image overridden: ${RANCHER_IMAGE:-rancher/rancher}:${RANCHER_IMAGE_TAG_RESOLVED} (chart stays $RANCHER_CHART_VERSION)"
   fi
+  # When the chart was published, so a fixed row reports it too rather than only
+  # a Prime row. Reuses the index the head path already fetched.
+  if [ -z "${RANCHER_CHART_RELEASED:-}" ]; then
+    if [ -n "$dates" ]; then
+      RANCHER_CHART_RELEASED="$(printf '%s\n' "$dates" | index_chart_released "$RANCHER_CHART_VERSION" || true)"
+    else
+      RANCHER_CHART_RELEASED="$(fetch_index_entries "$repo" 2>/dev/null \
+        | index_chart_released "$RANCHER_CHART_VERSION" || true)"
+    fi
+    RANCHER_CHART_RELEASED="$(chart_released_date "$RANCHER_CHART_RELEASED")"
+  fi
   export RANCHER_CHART_URL RANCHER_IMAGE RANCHER_CHART_VERSION RANCHER_IMAGE_TAG_RESOLVED
+  export RANCHER_CHART_RELEASED
   log_info "resolved: repo=$repo chart=$RANCHER_CHART_VERSION image=${RANCHER_IMAGE:-rancher/rancher} tag=$RANCHER_IMAGE_TAG_RESOLVED"
   helm_verify_image
   helm_check_chart_line
@@ -1208,6 +1808,13 @@ helm_install_rancher() {
   require_cmd kubectl
   require_cmd helm
 
+  # A metadata row deploys against a single-slot per-branch chart channel, so the
+  # chart resolved before provisioning can be gone by now. Re-read before helm is
+  # handed a version it may no longer be able to fetch.
+  if [ "${CHANNEL_SOURCE:-fixed}" = metadata ]; then
+    helm_recheck_metadata_chart
+  fi
+
   helm_install_cert_manager "$kc"
 
   local image="${RANCHER_IMAGE:-rancher/rancher}"
@@ -1229,13 +1836,21 @@ helm_install_rancher() {
     --set "hostname=${host}"
     --set "replicas=1"
     --set "rancherImage=${image}"
-    --set "rancherImageTag=${tag}"
     --set "rancherImagePullPolicy=Always"
     --set "bootstrapPassword=${RANCHER_PASSWORD:-password1234}"
     --set "ingress.ingressClassName=traefik"
     --set "extraEnv[0].name=CATTLE_AGENT_IMAGE"
     --set-string "extraEnv[0].value=${agent_image}:${tag}"
   )
+  # A released chart names its own image tag in appVersion, and every GA chart
+  # numbers it v<chart version>. Sending rancherImageTag as well would override
+  # that with a value derived the same way today, but it would silently keep
+  # working if a chart ever numbered its image differently, pulling a tag that
+  # was never published. Leave the decision to the chart when the chart is what
+  # named the image.
+  if ! is_true "${RANCHER_IMAGE_TAG_FROM_CHART:-}"; then
+    args+=(--set "rancherImageTag=${tag}")
+  fi
   # External mode publishes Rancher behind a tunnel whose certificate Rancher
   # did not issue, so agents must validate against the system trust store. The
   # chart value is set here rather than patched afterwards: patching leaves a
@@ -1263,6 +1878,22 @@ helm_install_rancher() {
       --set "extraEnv[1].name=CATTLE_UI_OFFLINE_PREFERRED"
       --set-string "extraEnv[1].value=true"
     )
+  elif [ -n "${MUSTER_UI_OFFLINE:-}" ]; then
+    # true | false | auto deploy as the env var Rancher reads at start; `auto`
+    # deploys as true and gates_reconcile_ui_offline may flip it once the running
+    # pod says which UI the image embeds. dynamic emits nothing, which leaves the
+    # chart/Rancher default in place.
+    local ui_preferred="$MUSTER_UI_OFFLINE"
+    case "$ui_preferred" in
+      auto) ui_preferred=true ;;
+      dynamic) ui_preferred="" ;;
+    esac
+    if [ -n "$ui_preferred" ]; then
+      args+=(
+        --set "extraEnv[1].name=CATTLE_UI_OFFLINE_PREFERRED"
+        --set-string "extraEnv[1].value=${ui_preferred}"
+      )
+    fi
   fi
   helm --kubeconfig "$kc" "${args[@]}"
 

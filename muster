@@ -137,6 +137,15 @@ Flags:
                                     it from --version (head->master, vX.Y->release-X.Y).
   --dashboard-dist <path>           Prebuilt UI dist to mount over the pod UI (up),
                                     or where build-ui writes (default: <src>/dist).
+  --ui-offline <true|false|dynamic|auto>
+                                    Which UI Rancher serves (setting
+                                    ui-offline-preferred). true: the UI inside
+                                    the image. false: the dashboard CDN. dynamic
+                                    (default): the build decides. auto: deploy
+                                    true, then read the UI the running image was
+                                    built with and flip to false when a head
+                                    image pins a released UI, so the CDN's
+                                    branch UI is served instead.
   --node-bin <dir>                  Node bin dir to use for build-ui (escape hatch);
                                     default auto-selects Node from the branch.
   --kubeconfig <path>               Kubeconfig for the target cluster (existing
@@ -182,6 +191,7 @@ OUT="${OUT:-env}"
 DASHBOARD_SRC="${DASHBOARD_SRC:-}"
 DASHBOARD_DIST="${DASHBOARD_DIST:-}"
 DASHBOARD_BRANCH="${DASHBOARD_BRANCH:-}"
+MUSTER_UI_OFFLINE="${MUSTER_UI_OFFLINE:-}"
 NODE_BIN="${NODE_BIN:-}"
 KUBECONFIG="${KUBECONFIG:-}"
 RANCHER_HOST="${RANCHER_HOST:-}"
@@ -302,6 +312,10 @@ while [ $# -gt 0 ]; do
       DASHBOARD_DIST="${2:?--dashboard-dist needs a value}"
       shift 2
       ;;
+    --ui-offline)
+      MUSTER_UI_OFFLINE="${2:?--ui-offline needs a value}"
+      shift 2
+      ;;
     --dashboard-branch)
       DASHBOARD_BRANCH="${2:?--dashboard-branch needs a value}"
       shift 2
@@ -348,6 +362,10 @@ case "$CHANNEL_SOURCE" in
 esac
 repo_valid "$RANCHER_REPO" \
   || die "unknown --repo: $RANCHER_REPO ($(repo_keys | tr -s ' ' '|' | sed 's/|$//'))"
+case "$MUSTER_UI_OFFLINE" in
+  '' | true | false | dynamic | auto) ;;
+  *) die "unknown --ui-offline: $MUSTER_UI_OFFLINE (true|false|dynamic|auto)" ;;
+esac
 
 export INSTANCE EXTERNAL RANCHER_REPO RANCHER_IMAGE_TAG OUT RANCHER_PASSWORD
 export RANCHER_IMAGE_TAG_OVERRIDE CHANNEL_SOURCE
@@ -355,7 +373,7 @@ export PREFER_STAGING DRY_RUN
 export MIRROR_REGISTRY MIRROR_ALL MIRROR_EXTENSION MIRROR_INSECURE MIRROR_K3K_TAG AIRGAP
 export MIRROR_FROM_CLUSTER MIRROR_K3S_VERSIONS
 export IMPORT_INSTANCE MANAGEMENT_INSTANCE
-export DASHBOARD_SRC DASHBOARD_DIST DASHBOARD_BRANCH NODE_BIN KUBECONFIG RANCHER_HOST
+export DASHBOARD_SRC DASHBOARD_DIST DASHBOARD_BRANCH MUSTER_UI_OFFLINE NODE_BIN KUBECONFIG RANCHER_HOST
 
 load_core() {
   # shellcheck source=lib/download.sh
@@ -497,17 +515,25 @@ case "$CMD" in
     echo "muster $MUSTER_VERSION"
     ;;
   show)
+    # For a self-resolving source the channel is decided at run time, so say so
+    # rather than presenting the default --repo as if it were the answer.
+    repo_note=""
+    case "$CHANNEL_SOURCE" in
+      fixed) ;;
+      *) repo_note="  (ignored: --channel-source ${CHANNEL_SOURCE} resolves it)" ;;
+    esac
     cat <<EOF
 provider=$PROVIDER
 instance=$INSTANCE
 external=$EXTERNAL
-repo=$RANCHER_REPO
+repo=$RANCHER_REPO$repo_note
 channel_source=$CHANNEL_SOURCE
 version=$RANCHER_IMAGE_TAG
 out=$OUT
 dashboard_src=${DASHBOARD_SRC:-<none>}
 dashboard_branch=${DASHBOARD_BRANCH:-<derived>}
 dashboard_dist=${DASHBOARD_DIST:-<none>}
+ui_offline=${MUSTER_UI_OFFLINE:-<dynamic>}
 node_bin=${NODE_BIN:-<auto>}
 kubeconfig=${KUBECONFIG:-<none>}
 rancher_host=${RANCHER_HOST:-<none>}

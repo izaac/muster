@@ -88,18 +88,57 @@ ui_cdn_path() {
   printf 'release-%s' "$minor"
 }
 
-# ui_source <image> <tag> - "image" when Rancher will serve the UI it embeds,
-# otherwise the index URL it will redirect to. Empty when the image cannot be
-# read.
+# ui_auto_serve_from_image <tag> <pin> - in `auto` mode, whether Rancher should
+# serve the UI the image embeds. Pure.
+#
+# A head backend does not imply a head UI: the image builds whatever
+# CATTLE_DASHBOARD_UI_VERSION names, and on a release branch that value holds the
+# dashboard branch while a patch is in development but is rewritten to the tag
+# when one ships, so for weeks afterwards a head image embeds the released UI.
+# Serving the image is only the reproducible choice when the pin is a branch
+# (master, release-2.15); when it names a released version the CDN path for the
+# backend's own branch is the closer pair.
+ui_auto_serve_from_image() {
+  local tag="${1:-}" pin="${2:-}"
+  case "$tag" in
+    head | *-head) ;;
+    *) return 0 ;;
+  esac
+  if printf '%s\n' "$pin" | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+'; then
+    return 1
+  fi
+  return 0
+}
+
+# ui_source <image> <tag> [pin] - "image" when Rancher will serve the UI it
+# embeds, otherwise the index URL it will redirect to. Empty when the image
+# cannot be read.
 #
 # An explicit MUSTER_UI_OFFLINE of true or false overrides the dynamic choice,
-# the same way setting ui-offline-preferred does on a live cluster.
+# the same way setting ui-offline-preferred does on a live cluster. `auto`
+# deploys as true (serve from the image) and is reconsidered after the rollout by
+# gates_reconcile_ui_offline, which is the only code that can read the pin out of
+# the running pod; when a <pin> is supplied here, decide from it instead.
 ui_source() {
-  local image="${1:?image required}" tag="${2:?tag required}" ver ui path
+  local image="${1:?image required}" tag="${2:?tag required}" pin="${3:-}" ver ui path
   case "${MUSTER_UI_OFFLINE:-dynamic}" in
     true)
       printf 'image'
       return 0
+      ;;
+    auto)
+      if [ -n "$pin" ]; then
+        if ui_auto_serve_from_image "$tag" "$pin"; then
+          printf 'image'
+          return 0
+        fi
+        # A head image pinning a released UI: fall through to the CDN path.
+      else
+        # Nothing has read the pod yet, and the deployment asks for true. The
+        # post-deploy reconcile flips it if the pin turns out to be a release.
+        printf 'image'
+        return 0
+      fi
       ;;
   esac
   ver="$(image_env "$image" "$tag" CATTLE_SERVER_VERSION)"

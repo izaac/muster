@@ -10,6 +10,10 @@ setup() {
   # shellcheck source=../lib/helm.sh
   . "$ROOT/lib/helm.sh"
 
+  # The fixtures below carry frozen dates and the Prime staleness gate reads the
+  # real clock, so pin "now" too: these tests must not start failing in November.
+  MUSTER_TODAY=2026-09-05
+
   # Optimus latest (Prime RC staging): newest first, mixed minors + an RC ladder.
   SEARCH_LATEST="$(
     printf '%s\n' \
@@ -239,9 +243,38 @@ setup() {
 
 # --- freshness pure helpers --------------------------------------------------
 
-@test "index_rancher_dates emits stab|version|created per rancher entry" {
+@test "index_rancher_dates emits rank|version|created per rancher entry" {
   out="$(printf '%s\n' "$INDEX_LATEST" | index_rancher_dates)"
-  [ "$out" = "0|2.14.2-rc1|2026-05-27T10:00:00Z" ]
+  [ "$out" = "2|2.14.2-rc1|2026-05-27T10:00:00Z" ]
+}
+
+@test "index_rancher_entries also captures the chart appVersion" {
+  out="$(printf '%s\n' \
+    '  rancher:' \
+    '  - apiVersion: v2' \
+    '    appVersion: v2.15.2' \
+    '    created: "2026-09-23T19:29:26.240534724Z"' \
+    '    version: 2.15.2' \
+    '  - apiVersion: v2' \
+    '    appVersion: ""' \
+    '    created: "2026-08-01T00:00:00Z"' \
+    '    version: 2.15.1' \
+    | index_rancher_entries)"
+  [ "$(printf '%s\n' "$out" | sed -n 1p)" = "3|2.15.2|2026-09-23T19:29:26.240534724Z|v2.15.2" ]
+  [ "$(printf '%s\n' "$out" | sed -n 2p)" = "3|2.15.1|2026-08-01T00:00:00Z|" ]
+}
+
+@test "index_rancher_entries ranks an rc below a final release and an alpha below an rc" {
+  out="$(printf '%s\n' \
+    '  rancher:' \
+    '  - apiVersion: v2' \
+    '    version: 2.14.0' \
+    '  - apiVersion: v2' \
+    '    version: 2.14.0-rc2' \
+    '  - apiVersion: v2' \
+    '    version: 2.14.0-alpha5' \
+    | index_rancher_entries | cut -d"|" -f1 | tr '\n' ' ')"
+  [ "$out" = "3 2 1 " ]
 }
 
 @test "newest_release_version returns the highest release for a line" {
@@ -736,6 +769,7 @@ _resolve_with_override() {
   retry() { :; }
   helm() { :; }
   helm_verify_image() { :; }
+  fetch_index_entries() { :; }
   resolve_chart_version() { printf '2.15.1-alpha1'; }
   helm_resolve_version
 }
@@ -1124,4 +1158,607 @@ _resolve_with_override() {
     'rancher-latest/rancher	2.15.1	x	Install Rancher Server' \
     'rancher-latest/rancher	2.16.0-9a46e2a-head	x	Install Rancher Server')"
   [ "$(resolve_chart_version rancher-latest head "$search")" = "2.16.0-9a46e2a-head" ]
+}
+
+# --- the release ladder and line boundaries ----------------------------------
+#
+# Ordering a chart version is not string ordering, and matching a line is not a
+# substring search: "2.1" must not answer with 2.15, and "2.12.5" must not answer
+# with 2.12.50. Both rules come from the resolver the Ansible pipeline uses.
+
+@test "a line matches only at a version boundary" {
+  local versions
+  versions="$(printf '%s\n' 2.1.0 2.1.4 2.15.0 2.15.1-rc1 2.150.0)"
+  [ "$(printf '%s\n' "$versions" | versions_on_line 2.1 | tr '\n' ' ')" = "2.1.0 2.1.4 " ]
+  [ "$(printf '%s\n' "$versions" | versions_on_line 2.15 | tr '\n' ' ')" = "2.15.0 2.15.1-rc1 " ]
+}
+
+@test "a patch line does not swallow a longer patch number" {
+  local versions
+  versions="$(printf '%s\n' 2.12.5 2.12.5-rc1 2.12.50 2.12.5-hotfix-1)"
+  [ "$(printf '%s\n' "$versions" | versions_on_line 2.12.5 | tr '\n' ' ')" = "2.12.5 2.12.5-rc1 2.12.5-hotfix-1 " ]
+}
+
+@test "resolve_chart_version never crosses into a longer line number" {
+  local search
+  search="$(printf '%s\n' \
+    'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+    'rancher-prime/rancher	2.15.0	2.15.0	Install Rancher Server')"
+  [ -z "$(resolve_chart_version rancher-prime 2.1 "$search")" ]
+  [ "$(resolve_chart_version rancher-prime 2.15 "$search")" = "2.15.0" ]
+}
+
+@test "resolve_chart_version never answers a patch with a longer patch" {
+  local search
+  search="$(printf '%s\n' \
+    'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+    'rancher-prime/rancher	2.12.50	2.12.50	Install Rancher Server')"
+  [ -z "$(resolve_chart_version rancher-prime 2.12.5 "$search")" ]
+}
+
+@test "the ladder ranks GA above rc above alpha above anything else" {
+  local versions
+  versions="$(printf '%s\n' 2.14.0-hotfix-1 2.14.0-alpha5 2.14.0-rc2 2.14.0-rc10 2.14.0)"
+  [ "$(printf '%s\n' "$versions" | highest_version)" = "2.14.0" ]
+}
+
+@test "the ladder orders rc10 above rc2 and alpha5 below rc2" {
+  [ "$(printf '%s\n' 2.14.0-rc2 2.14.0-rc10 | highest_version)" = "2.14.0-rc10" ]
+  [ "$(printf '%s\n' 2.14.0-alpha5 2.14.0-rc2 | highest_version)" = "2.14.0-rc2" ]
+}
+
+@test "a hotfix never sorts above an rc of the same base" {
+  run version_ahead 2.14.0-hotfix-1 2.14.0-rc2
+  [ "$status" -ne 0 ]
+  version_ahead 2.14.0-rc2 2.14.0-hotfix-1
+  version_ahead 2.14.0 2.14.0-hotfix-1
+}
+
+@test "the ladder keeps numeric patches in numeric order" {
+  [ "$(printf '%s\n' 2.13.9 2.13.10 | highest_version)" = "2.13.10" ]
+}
+
+@test "resolve_chart_version prefers GA over a same-base rc and hotfix" {
+  local search
+  search="$(printf '%s\n' \
+    'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+    'rancher-prime/rancher	2.14.3-hotfix-64aa.1	2.14.3-hotfix-64aa.1	Install Rancher Server' \
+    'rancher-prime/rancher	2.14.3-rc2	2.14.3-rc2	Install Rancher Server' \
+    'rancher-prime/rancher	2.14.3	2.14.3	Install Rancher Server')"
+  [ "$(resolve_chart_version rancher-prime 2.14.3 "$search")" = "2.14.3" ]
+}
+
+@test "resolve_chart_version ranks an rc above an alpha on a no-filter channel" {
+  local search
+  search="$(printf '%s\n' \
+    'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+    'rancher-prime/rancher	2.14.4-alpha7	2.14.4-alpha7	Install Rancher Server' \
+    'rancher-prime/rancher	2.14.4-rc1	2.14.4-rc1	Install Rancher Server')"
+  [ "$(resolve_chart_version rancher-prime 2.14 "$search")" = "2.14.4-rc1" ]
+}
+
+@test "a line request ignores a commit-named head chart on a no-filter channel" {
+  # A head chart is a new identity on every commit, so a fixed input resolving to
+  # one would deploy a different build on every run.
+  local search
+  search="$(printf '%s\n' \
+    'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+    'rancher-prime/rancher	2.13.4-abc1234-head	x	Install Rancher Server' \
+    'rancher-prime/rancher	2.13.3	2.13.3	Install Rancher Server')"
+  [ "$(resolve_chart_version rancher-prime 2.13 "$search")" = "2.13.3" ]
+}
+
+@test "head takes the newest line and that line's newest release when it has no head" {
+  local search
+  search="$(printf '%s\n' \
+    'NAME	CHART VERSION	APP VERSION	DESCRIPTION' \
+    'rancher-prime/rancher	2.14.6	2.14.6	Install Rancher Server' \
+    'rancher-prime/rancher	2.15.1	2.15.1	Install Rancher Server')"
+  [ "$(resolve_chart_version rancher-prime head "$search")" = "2.15.1" ]
+}
+
+# --- prime channel fan-out ---------------------------------------------------
+#
+# A prime row asks all three Prime channels: the GA in rancher-prime-ga once it
+# ships, an rc in rancher-latest before that, an alpha in rancher-alpha before
+# that. The GA channel is not optional, because charts.optimus stopped receiving
+# final Prime releases at 2.14.3.
+
+# _prime_index <channel=rows> ... - stub the index reader for the Prime channels.
+_prime_index() {
+  PRIME_ROWS=("$@")
+  fetch_index_entries() {
+    local row
+    for row in "${PRIME_ROWS[@]}"; do
+      case "$row" in
+        "$1="*) printf '%s\n' "${row#*=}" ;;
+      esac
+    done
+    return 0
+  }
+}
+
+@test "prime takes the GA channel over an rc published in rancher-latest" {
+  _prime_index \
+    "rancher-prime-ga=3|2.14.3|2026-08-06T10:00:00Z|v2.14.3" \
+    "rancher-latest=2|2.14.3-rc2|2026-08-05T10:00:00Z|v2.14.3-rc2"
+  CHANNEL_SOURCE=prime RANCHER_IMAGE_TAG=2.14
+  helm_resolve_prime >/dev/null
+  [ "$RANCHER_REPO" = "rancher-prime-ga" ]
+  [ "$RANCHER_IMAGE_TAG" = "2.14.3" ]
+  [ "$RANCHER_PRIME_HEAD_PICK" = "0" ]
+}
+
+@test "prime falls back to the newest head build when the minor has no release" {
+  # 2.16 has dozens of Prime head charts and no release. A minor ships Community
+  # first, so refusing these left the newest minor with no Prime coverage.
+  _prime_index \
+    "rancher-latest=0|2.16.0-ffbd1cc9-head|2026-08-14T15:42:29Z|v2.16.0-ffbd1cc9-head
+0|2.16.0-b29c3a6-head|2026-09-01T14:43:51Z|v2.16.0-b29c3a6-head"
+  CHANNEL_SOURCE=prime RANCHER_IMAGE_TAG=2.16
+  helm_resolve_prime >/dev/null
+  [ "$RANCHER_REPO" = "rancher-latest" ]
+  [ "$RANCHER_IMAGE_TAG" = "2.16.0-b29c3a6-head" ]
+  [ "$RANCHER_PRIME_HEAD_PICK" = "1" ]
+}
+
+@test "prime prefers a release over a fresher head build on the same minor" {
+  _prime_index \
+    "rancher-prime-ga=3|2.15.1|2026-08-01T00:00:00Z|v2.15.1" \
+    "rancher-latest=0|2.15.2-a90f264-head|2026-09-01T00:00:00Z|v2.15.2-a90f264-head"
+  CHANNEL_SOURCE=prime RANCHER_IMAGE_TAG=2.15
+  helm_resolve_prime >/dev/null
+  [ "$RANCHER_IMAGE_TAG" = "2.15.1" ]
+  [ "$RANCHER_PRIME_HEAD_PICK" = "0" ]
+}
+
+@test "prime-head skips the release and takes the newest head by created date" {
+  _prime_index \
+    "rancher-prime-ga=3|2.15.1|2026-08-01T00:00:00Z|v2.15.1" \
+    "rancher-latest=0|2.15.2-zzz9999-head|2026-08-20T00:00:00Z|v2.15.2-zzz9999-head
+0|2.15.2-aaa1111-head|2026-09-02T00:00:00Z|v2.15.2-aaa1111-head"
+  CHANNEL_SOURCE=prime-head RANCHER_IMAGE_TAG=2.15
+  helm_resolve_prime >/dev/null
+  [ "$RANCHER_REPO" = "rancher-latest" ]
+  [ "$RANCHER_IMAGE_TAG" = "2.15.2-aaa1111-head" ]
+  [ "$RANCHER_PRIME_HEAD_PICK" = "1" ]
+}
+
+@test "prime-head fails when the minor has releases but no head build" {
+  _prime_index "rancher-prime-ga=3|2.15.1|2026-08-01T00:00:00Z|v2.15.1"
+  CHANNEL_SOURCE=prime-head RANCHER_IMAGE_TAG=2.15
+  run helm_resolve_prime
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no Prime head build for the 2.15 line"* ]]
+}
+
+@test "prime refuses a tag that is not a minor line" {
+  CHANNEL_SOURCE=prime RANCHER_IMAGE_TAG=v2.14.3
+  run helm_resolve_prime
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--channel-source prime requires a minor line such as v2.14 (got 'v2.14.3')"* ]]
+}
+
+@test "prime fails when no Prime channel carries the line" {
+  _prime_index "rancher-latest=2|2.14.3-rc2|2026-08-05T10:00:00Z|v2.14.3-rc2"
+  CHANNEL_SOURCE=prime RANCHER_IMAGE_TAG=2.99
+  run helm_resolve_prime
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no Prime release or head build for the 2.99 line"* ]]
+}
+
+# --- prime-ga and community-ga -----------------------------------------------
+#
+# A GA row reads one edition's release channel and only final X.Y.Z, so the
+# answer always shipped. The chart supplies the image tag, so the run leaves
+# rancherImageTag to the chart rather than deriving it.
+
+# _ga_stub <rows> - stub the index reader and every impure call the GA resolver
+# makes, so it runs offline.
+_ga_stub() {
+  GA_ROWS="$1"
+  fetch_index_entries() { printf '%s\n' "$GA_ROWS"; }
+  require_cmd() { :; }
+  retry() { :; }
+  helm() { :; }
+  helm_verify_image() { :; }
+  helm_check_chart_line() { :; }
+}
+
+@test "the GA kinds map to the edition's own release channel" {
+  [ "${MUSTER_GA_CHANNEL[prime-ga]}" = "rancher-prime-ga" ]
+  [ "${MUSTER_GA_CHANNEL[community-ga]}" = "rancher-com-rc" ]
+  [ "$(repo_url "${MUSTER_GA_CHANNEL[prime-ga]}")" = "https://charts.rancher.com/server-charts/prime" ]
+  [ "$(repo_url "${MUSTER_GA_CHANNEL[community-ga]}")" = "https://releases.rancher.com/server-charts/latest" ]
+}
+
+@test "prime-ga picks only a final release, never an rc or a head build" {
+  _ga_stub '3|2.14.4|2026-08-10T00:00:00Z|v2.14.4
+3|2.14.6|2026-09-01T00:00:00Z|v2.14.6
+2|2.14.7-rc1|2026-09-05T00:00:00Z|v2.14.7-rc1
+0|2.14.7-abc-head|2026-09-06T00:00:00Z|v2.14.7-abc-head'
+  CHANNEL_SOURCE=prime-ga RANCHER_IMAGE_TAG=v2.14
+  helm_resolve_ga >/dev/null
+  [ "$RANCHER_REPO" = "rancher-prime-ga" ]
+  [ "$RANCHER_CHART_VERSION" = "2.14.6" ]
+  [ "$RANCHER_IMAGE_TAG" = "v2.14.6" ]
+  [ "$RANCHER_IMAGE_TAG_RESOLVED" = "v2.14.6" ]
+  [ "$RANCHER_IMAGE_TAG_FROM_CHART" = "1" ]
+  [ "$RANCHER_CHART_RELEASED" = "2026-09-01" ]
+}
+
+@test "community-ga reads the community release channel and leaves the image unqualified" {
+  _ga_stub '3|2.13.3|2026-06-01T00:00:00Z|v2.13.3'
+  CHANNEL_SOURCE=community-ga RANCHER_IMAGE_TAG=2.13
+  helm_resolve_ga >/dev/null
+  [ "$RANCHER_REPO" = "rancher-com-rc" ]
+  [ "$RANCHER_CHART_VERSION" = "2.13.3" ]
+  [ "$RANCHER_IMAGE" = "" ]
+}
+
+@test "a GA row honours a full version exactly" {
+  _ga_stub '3|2.15.1|2026-08-01T00:00:00Z|v2.15.1
+3|2.15.2|2026-09-01T00:00:00Z|v2.15.2'
+  CHANNEL_SOURCE=prime-ga RANCHER_IMAGE_TAG=v2.15.1
+  helm_resolve_ga >/dev/null
+  [ "$RANCHER_CHART_VERSION" = "2.15.1" ]
+}
+
+@test "a GA row rejects an rc or head build when asked for the line" {
+  _ga_stub '2|2.15.2-rc1|2026-09-01T00:00:00Z|v2.15.2-rc1
+0|2.15.2-abc-head|2026-09-02T00:00:00Z|v2.15.2-abc-head'
+  CHANNEL_SOURCE=prime-ga RANCHER_IMAGE_TAG=2.15
+  run helm_resolve_ga
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"publishes no final release on the 2.15 line"* ]]
+  [[ "$output" == *"--channel-source prime"* ]]
+}
+
+@test "a GA row dies when the chart appVersion disagrees with its chart version" {
+  _ga_stub '3|2.15.1|2026-08-01T00:00:00Z|v2.14.9'
+  CHANNEL_SOURCE=prime-ga RANCHER_IMAGE_TAG=2.15
+  run helm_resolve_ga
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"declares appVersion 'v2.14.9'"* ]]
+  [[ "$output" == *"numbers its image differently"* ]]
+}
+
+@test "a GA row requires the chart appVersion to be exactly v<version>" {
+  # The value is taken as written, so a bare 2.15.1 is not the tag the chart
+  # publishes even though it normalises to the same version.
+  _ga_stub '3|2.15.1|2026-08-01T00:00:00Z|2.15.1'
+  CHANNEL_SOURCE=prime-ga RANCHER_IMAGE_TAG=2.15
+  run helm_resolve_ga
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"declares appVersion '2.15.1'"* ]]
+  [[ "$output" == *"numbers its image differently"* ]]
+}
+
+@test "a GA row tolerates an empty appVersion" {
+  _ga_stub '3|2.15.1|2026-08-01T00:00:00Z|'
+  CHANNEL_SOURCE=prime-ga RANCHER_IMAGE_TAG=2.15
+  helm_resolve_ga >/dev/null
+  [ "$RANCHER_CHART_VERSION" = "2.15.1" ]
+}
+
+@test "ga_channel_pick rejects a tag that is neither a minor nor a final version" {
+  local rows='3|2.14.4|2026-08-10T00:00:00Z|v2.14.4'
+  # A pre-release tag used to have its suffix stripped, which turned it into a
+  # line request and answered with a different chart than the one asked for.
+  run ga_channel_pick rancher-prime-ga 2.14.3-rc1 "$rows"
+  [ "$status" -eq 1 ]
+  [ -z "$output" ]
+
+  run ga_channel_pick rancher-prime-ga head "$rows"
+  [ "$status" -eq 1 ]
+
+  [ "$(ga_channel_pick rancher-prime-ga 2.14 "$rows")" = "rancher-prime-ga|2.14.4|2026-08-10T00:00:00Z|v2.14.4" ]
+}
+
+@test "a GA row refuses a pre-release tag instead of resolving its line" {
+  _ga_stub '3|2.14.4|2026-08-10T00:00:00Z|v2.14.4'
+  CHANNEL_SOURCE=prime-ga RANCHER_IMAGE_TAG=2.14.3-rc1
+  run helm_resolve_ga
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"takes a minor line such as v2.15 or a full version such as v2.15.1 (got '2.14.3-rc1')"* ]]
+}
+
+@test "a GA row fails when the exact version is not shipped in that channel" {
+  _ga_stub '3|2.15.1|2026-08-01T00:00:00Z|v2.15.1'
+  CHANNEL_SOURCE=community-ga RANCHER_IMAGE_TAG=v2.15.9
+  run helm_resolve_ga
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"publishes no final release 2.15.9"* ]]
+}
+
+@test "helm_resolve_version dispatches each channel source to its resolver" {
+  helm_resolve_metadata() { printf 'metadata'; }
+  helm_resolve_ga() { printf 'ga'; }
+  helm_resolve_prime() { printf 'prime'; }
+  freshness_maybe_promote() { printf 'fixed'; }
+  # The rest of the generic path, so a prime pick can run through it.
+  helm_search_charts() { :; }
+  resolve_chart_version() { printf '2.15.1'; }
+  fetch_index_entries() { :; }
+  fetch_index_dates() { :; }
+  require_cmd() { :; }
+  retry() { :; }
+  helm_verify_image() { :; }
+  helm_check_chart_line() { :; }
+
+  [ "$(CHANNEL_SOURCE=metadata helm_resolve_version)" = "metadata" ]
+  [ "$(CHANNEL_SOURCE=prime-ga helm_resolve_version)" = "ga" ]
+  [ "$(CHANNEL_SOURCE=community-ga helm_resolve_version)" = "ga" ]
+  # A prime pick is already an exact chart, so the keep-fresh probe must not run
+  # afterwards and rewrite it; the generic resolution still does.
+  RANCHER_REPO=rancher-latest RANCHER_IMAGE_TAG=2.15.1
+  [ "$(RANCHER_REPO=rancher-latest RANCHER_IMAGE_TAG=2.15.1 CHANNEL_SOURCE=prime helm_resolve_version)" = "prime" ]
+  [ "$(RANCHER_REPO=rancher-latest RANCHER_IMAGE_TAG=2.15.1 CHANNEL_SOURCE=prime-head helm_resolve_version)" = "prime" ]
+  [ "$(RANCHER_REPO=rancher-com-alpha RANCHER_IMAGE_TAG=2.15.1 CHANNEL_SOURCE=fixed helm_resolve_version)" = "fixed" ]
+}
+
+@test "a GA row omits rancherImageTag from the install when the chart supplies it" {
+  helm() { printf '%s\n' "$*"; }
+  kubectl() { :; }
+  helm_install_cert_manager() { :; }
+  require_cmd() { :; }
+  RANCHER_REPO=rancher-prime-ga
+  RANCHER_CHART_VERSION=2.15.1
+  RANCHER_IMAGE=registry.rancher.com/rancher/rancher
+  RANCHER_IMAGE_TAG_RESOLVED=v2.15.1
+  RANCHER_IMAGE_TAG_FROM_CHART=1
+  run helm_install_rancher /tmp/kc rancher.example.com
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"rancherImageTag="* ]]
+
+  RANCHER_IMAGE_TAG_FROM_CHART=0
+  run helm_install_rancher /tmp/kc rancher.example.com
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"rancherImageTag=v2.15.1"* ]]
+}
+
+# --- the Prime staleness gate ------------------------------------------------
+#
+# A Prime row whose newest chart is months old is testing a line that has stopped
+# publishing there. Resolution runs before provisioning, so failing costs nothing
+# and a green result never means "nothing current was tested".
+
+@test "date_age_days measures elapsed days and says -1 when unparsable" {
+  [ "$(date_age_days 2026-08-12 2026-09-05)" = "24" ]
+  [ "$(date_age_days 2026-09-05 2026-09-05)" = "0" ]
+  [ "$(date_age_days '' 2026-09-05)" = "-1" ]
+  [ "$(date_age_days not-a-date 2026-09-05)" = "-1" ]
+}
+
+@test "a Prime row fails when its newest chart is past the staleness limit" {
+  _prime_index "rancher-latest=2|2.14.3-rc2|2026-05-01T00:00:00Z|v2.14.3-rc2"
+  CHANNEL_SOURCE=prime RANCHER_IMAGE_TAG=2.14
+  MUSTER_TODAY=2026-09-05 MUSTER_PRIME_MAX_AGE_DAYS=60
+  run helm_resolve_prime
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"newest 2.14 chart in Prime is 2.14.3-rc2, published 2026-05-01 (127 days ago, limit 60)"* ]]
+  [[ "$output" == *"stopped publishing to Prime"* ]]
+  [[ "$output" == *"Raise MUSTER_PRIME_MAX_AGE_DAYS (or set 0)"* ]]
+}
+
+@test "the staleness gate still fires for prime-head" {
+  _prime_index "rancher-latest=0|2.14.3-abc-head|2026-05-01T00:00:00Z|v2.14.3-abc-head"
+  CHANNEL_SOURCE=prime-head RANCHER_IMAGE_TAG=2.14
+  MUSTER_TODAY=2026-09-05 MUSTER_PRIME_MAX_AGE_DAYS=60
+  run helm_resolve_prime
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"newest 2.14 chart in Prime is 2.14.3-abc-head"* ]]
+}
+
+@test "a recent chart passes the gate, and a limit of 0 accepts any age" {
+  _prime_index "rancher-latest=2|2.14.3-rc2|2026-08-30T00:00:00Z|v2.14.3-rc2"
+  CHANNEL_SOURCE=prime RANCHER_IMAGE_TAG=2.14
+  MUSTER_TODAY=2026-09-05 MUSTER_PRIME_MAX_AGE_DAYS=60
+  helm_resolve_prime >/dev/null
+  [ "$RANCHER_IMAGE_TAG" = "2.14.3-rc2" ]
+
+  _prime_index "rancher-latest=2|2.14.3-rc2|2026-05-01T00:00:00Z|v2.14.3-rc2"
+  CHANNEL_SOURCE=prime RANCHER_IMAGE_TAG=2.14
+  MUSTER_PRIME_MAX_AGE_DAYS=0
+  helm_resolve_prime >/dev/null
+  [ "$RANCHER_IMAGE_TAG" = "2.14.3-rc2" ]
+}
+
+@test "a chart dated in the future is not treated as stale" {
+  _prime_index "rancher-latest=2|2.16.3|2026-12-01T00:00:00Z|v2.16.3"
+  CHANNEL_SOURCE=prime RANCHER_IMAGE_TAG=2.16
+  MUSTER_TODAY=2026-09-05 MUSTER_PRIME_MAX_AGE_DAYS=60
+  helm_resolve_prime >/dev/null
+  [ "$RANCHER_IMAGE_TAG" = "2.16.3" ]
+}
+
+# --- channel fetch semantics: 404 is gone, anything else fails ---------------
+#
+# A retired channel (404) is skipped so the row keeps working through the Prime
+# consolidation. A channel that is merely unreachable might hold the newest
+# chart, so resolving from the rest would quietly deploy an older build.
+
+@test "fetch_index_url reads a 200, ignores a 404, and fails otherwise" {
+  curl() { printf '%s\n%s' 'apiVersion: v1' 200; }
+  [ "$(fetch_index_url https://charts.example/x)" = "apiVersion: v1" ]
+
+  curl() { printf '%s\n%s' '' 404; }
+  run fetch_index_url https://charts.example/x
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+
+  curl() { printf '%s\n%s' '' 500; }
+  run fetch_index_url https://charts.example/x
+  [ "$status" -ne 0 ]
+
+  curl() { return 7; }
+  run fetch_index_url https://charts.example/x
+  [ "$status" -ne 0 ]
+}
+
+@test "a 404 channel is skipped and the rest of the Prime fan-out still resolves" {
+  fetch_index_entries() {
+    case "$1" in
+      rancher-prime-ga) return 0 ;;
+      rancher-latest) printf '%s\n' '3|2.15.1|2026-08-27T00:00:00Z|v2.15.1' ;;
+      rancher-alpha) printf '' ;;
+    esac
+  }
+  CHANNEL_SOURCE=prime RANCHER_IMAGE_TAG=2.15
+  helm_resolve_prime >/dev/null
+  [ "$RANCHER_REPO" = "rancher-latest" ]
+  [ "$RANCHER_IMAGE_TAG" = "2.15.1" ]
+}
+
+@test "an unreachable Prime channel fails the row instead of resolving around it" {
+  fetch_index_entries() {
+    case "$1" in
+      rancher-prime-ga) printf '%s\n' '3|2.15.1|2026-08-27T00:00:00Z|v2.15.1' ;;
+      *) return 22 ;;
+    esac
+  }
+  CHANNEL_SOURCE=prime RANCHER_IMAGE_TAG=2.15
+  run helm_resolve_prime
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"failed to fetch chart index from rancher-latest"* ]]
+  [[ "$output" == *"charts.optimus.rancher.io/server-charts/latest/index.yaml"* ]]
+}
+
+@test "a Prime row fails when every channel answers 404" {
+  fetch_index_entries() { printf ''; }
+  CHANNEL_SOURCE=prime RANCHER_IMAGE_TAG=2.15
+  run helm_resolve_prime
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"none of rancher-prime-ga, rancher-latest, rancher-alpha served a chart index (every channel answered 404 or was empty)"* ]]
+}
+
+# --- mid-run metadata re-read -----------------------------------------------
+#
+# A metadata row deploys a chart named for one commit from a single-slot channel.
+# A republish deletes the previous version, so the chart resolved before
+# provisioning can be gone by the time the cluster is up.
+
+@test "a metadata row re-reads its chart index before installing" {
+  RANCHER_CHART_URL=https://charts.example/muster-metadata-release-2.15
+  RANCHER_REPO=muster-metadata-release-2.15
+  RANCHER_CHART_VERSION=2.15-aaa-head
+  RANCHER_CHART_RELEASED=2026-09-01
+  fetch_index_entries_url() { printf '%s\n' '0|2.15-bbb-head|2026-09-04T10:00:00Z|'; }
+  retry() { :; }
+  helm_recheck_metadata_chart >/dev/null
+  [ "$RANCHER_CHART_VERSION" = "2.15-bbb-head" ]
+  [ "$RANCHER_CHART_RELEASED" = "2026-09-04" ]
+}
+
+@test "the re-read announces a chart that moved" {
+  RANCHER_CHART_URL=https://charts.example/muster-metadata-release-2.15
+  RANCHER_REPO=muster-metadata-release-2.15
+  RANCHER_CHART_VERSION=2.15-aaa-head
+  fetch_index_entries_url() { printf '%s\n' '0|2.15-bbb-head|2026-09-04T10:00:00Z|'; }
+  retry() { :; }
+  run helm_recheck_metadata_chart
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"chart moved while the cluster came up: 2.15-aaa-head is gone, deploying 2.15-bbb-head instead"* ]]
+}
+
+@test "the re-read leaves the pick alone when the chart has not moved" {
+  RANCHER_CHART_URL=https://charts.example/muster-metadata-release-2.15
+  RANCHER_REPO=muster-metadata-release-2.15
+  RANCHER_CHART_VERSION=2.15-bbb-head
+  RANCHER_CHART_RELEASED=2026-09-04
+  fetch_index_entries_url() { printf '%s\n' '0|2.15-bbb-head|2026-09-04T10:00:00Z|'; }
+  retry() { :; }
+  run helm_recheck_metadata_chart
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [ "$RANCHER_CHART_VERSION" = "2.15-bbb-head" ]
+}
+
+@test "the re-read keeps the earlier pick when the index cannot be read" {
+  RANCHER_CHART_URL=https://charts.example/muster-metadata-release-2.15
+  RANCHER_REPO=muster-metadata-release-2.15
+  RANCHER_CHART_VERSION=2.15-aaa-head
+  fetch_index_entries_url() { return 1; }
+  retry() { :; }
+  helm_recheck_metadata_chart >/dev/null
+  [ "$RANCHER_CHART_VERSION" = "2.15-aaa-head" ]
+}
+
+# --- a stopped Community line ------------------------------------------------
+#
+# A Community line stops receiving patches at some point and the rest ship to
+# Prime. A rebuilt -head image proves nothing: head images keep building on both
+# registries. The patch gap on final releases is the signal.
+
+@test "index_line_max_final_patch takes the highest shipped patch" {
+  local rows='3|2.13.3||v2.13.3
+2|2.13.4-rc1||v2.13.4-rc1
+0|2.13.4-aaa-head||v2.13.4-aaa-head
+3|2.13.13||v2.13.13
+3|2.14.9||v2.14.9'
+  [ "$(printf '%s\n' "$rows" | index_line_max_final_patch 2.13)" = "13" ]
+  [ "$(printf '%s\n' "$rows" | index_line_max_final_patch 2.14)" = "9" ]
+  [ "$(printf '%s\n' "$rows" | index_line_max_final_patch 2.99)" = "-1" ]
+  [ "$(printf '%s\n' "$rows" | index_line_max_final_patch 2.13)" -gt 0 ]
+}
+
+@test "a fixed Community row warns when Prime is ahead on final patches" {
+  fetch_index_entries() {
+    case "$1" in
+      rancher-com-rc) printf '%s\n' '3|2.13.3||v2.13.3' ;;
+      rancher-prime-ga) printf '%s\n' '3|2.13.13||v2.13.13' ;;
+    esac
+  }
+  CHANNEL_SOURCE=fixed RANCHER_REPO=rancher-com-rc RANCHER_IMAGE_TAG=v2.13
+  run helm_warn_stopped_community
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"the 2.13 line stopped at Community 2.13.3 while Prime is at 2.13.13"* ]]
+  [[ "$output" == *"Use --channel-source prime, or --channel-source metadata"* ]]
+}
+
+@test "the stopped-community warning stays quiet when the editions are level" {
+  fetch_index_entries() {
+    case "$1" in
+      rancher-com-rc | rancher-prime-ga) printf '%s\n' '3|2.13.3||v2.13.3' ;;
+    esac
+  }
+  CHANNEL_SOURCE=fixed RANCHER_REPO=rancher-com-rc RANCHER_IMAGE_TAG=v2.13
+  run helm_warn_stopped_community
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "the warning ignores rc and alpha when Prime is only ahead on a candidate" {
+  fetch_index_entries() {
+    case "$1" in
+      rancher-com-rc) printf '%s\n' '3|2.13.3||v2.13.3' ;;
+      rancher-prime-ga) printf '%s\n' '2|2.13.4-rc1||v2.13.4-rc1
+1|2.13.4-alpha2||v2.13.4-alpha2' ;;
+    esac
+  }
+  CHANNEL_SOURCE=fixed RANCHER_REPO=rancher-com-rc RANCHER_IMAGE_TAG=v2.13
+  run helm_warn_stopped_community
+  [ -z "$output" ]
+}
+
+@test "the warning is only for fixed Community rows" {
+  CHANNEL_SOURCE=prime RANCHER_REPO=rancher-com-rc RANCHER_IMAGE_TAG=v2.13
+  run helm_warn_stopped_community
+  [ -z "$output" ]
+
+  CHANNEL_SOURCE=fixed RANCHER_REPO=rancher-alpha RANCHER_IMAGE_TAG=v2.13
+  run helm_warn_stopped_community
+  [ -z "$output" ]
+
+  CHANNEL_SOURCE=fixed RANCHER_REPO=rancher-com-rc RANCHER_IMAGE_TAG=head
+  run helm_warn_stopped_community
+  [ -z "$output" ]
+}
+
+@test "the warning says nothing when an index is unreachable" {
+  fetch_index_entries() { return 22; }
+  CHANNEL_SOURCE=fixed RANCHER_REPO=rancher-com-rc RANCHER_IMAGE_TAG=v2.13
+  run helm_warn_stopped_community
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
 }

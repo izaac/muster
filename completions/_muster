@@ -27,7 +27,7 @@ _muster() {
     '--external[Expose Rancher via a public tunnel]' \
     '--version[Rancher image tag]:tag:' \
     '--repo[Rancher channel]:channel:(rancher-prime rancher-prime-ga rancher-latest rancher-alpha rancher-community rancher-com-rc rancher-com-alpha)' \
-    '--channel-source[Where the channel and image come from]:source:(fixed metadata prime)' \
+    '--channel-source[Where the channel and image come from]:source:(fixed metadata prime prime-head prime-ga community-ga)' \
     '--password[Rancher bootstrap/admin password]:password:' \
     '--image-tag[Install this server image tag against the resolved chart]:tag:' \
     '--out[Handoff format]:format:(env cypress json)' \
@@ -44,6 +44,7 @@ _muster() {
     '--dashboard-src[rancher/dashboard checkout]:dir:_files -/' \
     '--dashboard-dist[prebuilt UI dist]:dir:_files -/' \
     '--dashboard-branch[Force the UI branch]:branch:' \
+    '--ui-offline[Which UI Rancher serves]:mode:(true false dynamic auto)' \
     '--node-bin[Node bin dir for build-ui]:dir:_files -/' \
     '--kubeconfig[Kubeconfig for the target cluster]:file:_files' \
     '--rancher-host[Hostname Rancher is served at]:host:' \

@@ -22,4 +22,18 @@ external_apply() {
   retry 20 5 "agent-tls-mode set" -- \
     kubectl --kubeconfig "$kc" patch settings.management.cattle.io agent-tls-mode --type=merge \
     -p '{"value":"system-store"}'
+
+  # A chart installed with no ingress.tls.source uses the default "rancher",
+  # which creates the self-signed tls-rancher-ingress CA and stores it in
+  # cacerts. Rancher then bakes that CA into every generated downstream manifest
+  # as --ca-checksum (cattle-cluster-agent, fleet-agent), and Cloudflare
+  # terminates TLS at its edge with its own certificate, so the agent pins a CA
+  # that cannot validate the tunnel hostname and loops on TLS handshake
+  # failures. agent-tls-mode=system-store does not help: the checksum is
+  # additive. Clear it before anything registers, and keep this after every
+  # helm upgrade --install of the chart, because a reinstall repopulates it.
+  log_info "external mode: clearing cacerts (Cloudflare edge cert)"
+  retry 20 5 "cacerts cleared" -- \
+    kubectl --kubeconfig "$kc" patch settings.management.cattle.io cacerts --type=merge \
+    -p '{"value":""}'
 }

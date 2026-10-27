@@ -210,6 +210,48 @@ import_wait_active() {
   return 1
 }
 
+# import_keep_server_url <current_url> <tunnel_url> <mgmt_host> - true when the
+# management cluster's server-url must be left alone. Pure.
+#
+# mgmt_host is the internal endpoint (the .sslip.io name), which a downstream on
+# the shared network can reach but an outside agent cannot. In external mode the
+# management Rancher was pinned to the tunnel hostname, and import runs in its own
+# process where that fact is not in scope, so rewriting server-url back to the
+# endpoint would point a re-reading agent at a host it cannot reach, with a
+# certificate that no longer matches.
+import_keep_server_url() {
+  local cur="${1:-}" tunnel="${2:-}" host="${3:?management host required}"
+  [ -n "$cur" ] || return 1
+  # A live tunnel is authoritative: the setting names the tunnel this run owns.
+  if [ -n "$tunnel" ] && [ "$cur" = "$tunnel" ]; then
+    return 0
+  fi
+  # A quick-tunnel hostname is never the internal endpoint, whoever set it.
+  case "$cur" in
+    https://*.trycloudflare.com) return 0 ;;
+  esac
+  is_true "${EXTERNAL:-}" || return 1
+  [ "$cur" != "https://${host}" ]
+}
+
+# import_sync_server_url <mgmt_kubeconfig> <mgmt_host> - point server-url at the
+# management host for the downstream's benefit, unless an external hostname is
+# already there and must be preserved.
+import_sync_server_url() {
+  local mgmt_kc="${1:?kubeconfig required}" mgmt_host="${2:?management host required}"
+  local cur_url tunnel
+  cur_url="$(kubectl --kubeconfig "$mgmt_kc" get settings.management.cattle.io server-url \
+    -o jsonpath='{.value}' 2>/dev/null || true)"
+  tunnel="$(tunnel_url 2>/dev/null || true)"
+  if import_keep_server_url "$cur_url" "$tunnel" "$mgmt_host"; then
+    log_info "import: keeping external server-url ${cur_url}"
+    return 0
+  fi
+  retry 10 3 "server-url set" -- \
+    kubectl --kubeconfig "$mgmt_kc" patch settings.management.cattle.io server-url \
+    --type=merge -p "{\"value\":\"https://${mgmt_host}\"}"
+}
+
 # import_run - the whole flow against the current (management) instance.
 import_run() {
   [ "$PROVIDER" = k3d ] || die "import needs --provider k3d (got '$PROVIDER')"
@@ -236,10 +278,10 @@ import_run() {
   [ "$ds" = "$mgmt" ] && die "import downstream must differ from the management instance ($mgmt)"
 
   # The cluster agent connects to server-url; make sure it names the management
-  # host the downstream can actually reach on the shared network.
-  retry 10 3 "server-url set" -- \
-    kubectl --kubeconfig "$mgmt_kc" patch settings.management.cattle.io server-url \
-    --type=merge -p "{\"value\":\"https://${mgmt_host}\"}"
+  # host the downstream can actually reach on the shared network. An external
+  # hostname already on the setting is kept: it is the reachable one for anything
+  # outside the network, and rewriting it would break those agents.
+  import_sync_server_url "$mgmt_kc" "$mgmt_host"
 
   branches_apply_k3s_image
   import_downstream_up "$ds" "$mgmt_net" "$mgmt"

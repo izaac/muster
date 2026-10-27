@@ -12,6 +12,45 @@
 [ -n "${_MUSTER_GATES_SH:-}" ] && return 0
 _MUSTER_GATES_SH=1
 
+# gates_nudge_chart_repos <kc> - force an immediate retry of the rancher-charts
+# ClusterRepo when its download is stuck in a backoff.
+#
+# rancher-webhook comes from that repo, and a failed download is retried on a
+# five-minute timer, so a cold cluster can spend most of the gate's budget
+# waiting for a retry that a single forceUpdate would start now. Best-effort by
+# construction: a gate must never fail because a nudge could not be read applied.
+gates_nudge_chart_repos() {
+  local kc="${1:?kubeconfig required}" state status message
+  # Once the webhook deployment exists, its chart arrived and there is nothing to
+  # nudge.
+  kubectl --kubeconfig "$kc" -n cattle-system get deploy rancher-webhook >/dev/null 2>&1 && return 0
+
+  state="$(kubectl --kubeconfig "$kc" get clusterrepo.catalog.cattle.io rancher-charts \
+    -o jsonpath='{.status.conditions[?(@.type=="Downloaded")].status}|{.status.conditions[?(@.type=="Downloaded")].message}' \
+    2>/dev/null || true)"
+  [ -n "$state" ] || return 0
+  status="${state%%|*}"
+  message="${state#*|}"
+  [ "$status" = False ] || return 0
+  printf '%s\n' "$message" | grep -Eq 'Will retry after|50[0234]|timeout|unexpected client error' || return 0
+
+  log_info "nudge: clusterrepo/rancher-charts failed download; forcing immediate retry"
+  kubectl --kubeconfig "$kc" patch clusterrepo.catalog.cattle.io rancher-charts --type=merge \
+    -p "{\"spec\":{\"forceUpdate\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}" >/dev/null 2>&1 || true
+}
+
+# gates_webhook_ready <kc> - true once rancher-webhook is 1/1 Running, and nudges
+# the chart repo on every unsuccessful attempt so a backoff is cut short.
+gates_webhook_ready() {
+  local kc="${1:?kubeconfig required}"
+  if kubectl --kubeconfig "$kc" -n cattle-system get po -l app=rancher-webhook --no-headers 2>/dev/null \
+    | grep -q '1/1.*Running'; then
+    return 0
+  fi
+  gates_nudge_chart_repos "$kc"
+  return 1
+}
+
 # gates_wait - block until Rancher is serving and its controllers are ready.
 #
 # A driver that ships Rancher itself (e.g. docker standalone, where the
@@ -55,8 +94,10 @@ gates_wait() {
     # 90 attempts (15 min) covers cold CI runners where CRD apply + webhook chart
     # install saturate the node and gate timing varies run-to-run. Locally ~90s.
     log_info "waiting: rancher-webhook pod ready"
-    retry 90 10 "rancher-webhook 1/1 Running" -- \
-      sh -c "kubectl --kubeconfig '$kc' -n cattle-system get po -l app=rancher-webhook 2>/dev/null | grep -q '1/1.*Running'"
+    # A stuck rancher-charts download backs off for five minutes; nudge it before
+    # the wait so the cold-start clock is not spent waiting on the timer.
+    gates_nudge_chart_repos "$kc"
+    retry 90 10 "rancher-webhook 1/1 Running" -- gates_webhook_ready "$kc"
 
     # head (>=2.15, Turtles) deploys CAPI into cattle-capi-system; older lines used
     # cattle-provisioning-capi-system. Accept either.

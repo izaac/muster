@@ -55,20 +55,29 @@ Flags:
                                     rancher-prime|rancher-prime-ga|rancher-latest|
                                     rancher-alpha|rancher-community|rancher-com-rc|
                                     rancher-com-alpha.
-  --channel-source <fixed|metadata|prime>
+  --channel-source <fixed|metadata|prime|prime-head|prime-ga|community-ga>
                                     Where the channel and image come from
                                     (default: fixed). metadata reads the branch
                                     named by --version from the dashboard
                                     branches-metadata.json: its registry key
                                     decides Prime vs Community, the image keeps
                                     the branch head tag, and the chart comes from
-                                    the branch head channel. prime takes the
-                                    newest Prime release of the line named by
-                                    --version, from whichever Prime channel holds
-                                    it: the rc in rancher-latest, or the alpha in
-                                    rancher-alpha for a line with no rc yet. Both
-                                    are muster self-resolving the way the nightly
-                                    matrix should. --repo is ignored in either.
+                                    the branch head channel.
+                                    prime takes the newest Prime release of the
+                                    line named by --version, from whichever Prime
+                                    channel holds it (rancher-prime-ga, then
+                                    rancher-latest, then rancher-alpha), falling
+                                    back to that line's newest head build when it
+                                    has no release at all.
+                                    prime-head takes that in-flight head build
+                                    whether or not the line has released, so it
+                                    names a different commit on every run.
+                                    prime-ga and community-ga take the newest
+                                    shipped X.Y.Z from that edition's release
+                                    channel only, and let the chart supply the
+                                    image tag. Both accept a full version as a
+                                    pin. --repo is ignored by every source except
+                                    fixed.
   --version <tag>                   Image tag: head or a version like 2.13 /
                                     2.13.4-rc1 (default: head).
   --dry-run                         Resolve and print the chart, image and
@@ -334,8 +343,8 @@ case "$OUT" in
   *) die "unknown --out: $OUT (env|cypress|json)" ;;
 esac
 case "$CHANNEL_SOURCE" in
-  fixed | metadata | prime) ;;
-  *) die "unknown --channel-source: $CHANNEL_SOURCE (fixed|metadata|prime)" ;;
+  fixed | metadata | prime | prime-head | prime-ga | community-ga) ;;
+  *) die "unknown --channel-source: $CHANNEL_SOURCE (fixed|metadata|prime|prime-head|prime-ga|community-ga)" ;;
 esac
 repo_valid "$RANCHER_REPO" \
   || die "unknown --repo: $RANCHER_REPO ($(repo_keys | tr -s ' ' '|' | sed 's/|$//'))"
@@ -398,10 +407,20 @@ cmd_up() {
   if [ "$PROVIDER" = existing ] && is_true "${EXTERNAL:-}"; then
     die "existing provider does not support --external (RANCHER_HOST is already reachable)"
   fi
-  local tunnel_url=""
+  local tunnel_url="" started_tunnel=false
   if is_true "${EXTERNAL:-}"; then
-    tunnel_url="$(tunnel_up)"
-    export EXTERNAL_HOSTNAME="${tunnel_url#https://}"
+    # A caller or config file may already own the hostname (an existing tunnel,
+    # a stable domain). Only start a quick tunnel when nobody named one, so the
+    # run neither replaces a hostname it was handed nor leaks a process it
+    # started when provisioning fails.
+    if [ -n "${EXTERNAL_HOSTNAME:-}" ]; then
+      log_info "external mode: using pre-configured hostname ${EXTERNAL_HOSTNAME}"
+      export EXTERNAL_HOSTNAME
+    else
+      tunnel_url="$(tunnel_up)"
+      export EXTERNAL_HOSTNAME="${tunnel_url#https://}"
+      started_tunnel=true
+    fi
   fi
 
   if is_true "${AIRGAP:-}"; then
@@ -410,7 +429,16 @@ cmd_up() {
     airgap_verify_registry "$MIRROR_REGISTRY" "${MIRROR_INSECURE:-}"
   fi
   branches_apply_k3s_image
+  # A failure inside driver_up must still tear the tunnel down, but wrapping the
+  # call in `if !` or `||` would switch `set -e` and the ERR trap off inside the
+  # driver, hiding a failed provisioning step behind later work. Keep the call a
+  # plain statement and clean up from an EXIT trap, cleared the moment the driver
+  # returns so a later failure does not aim it at a tunnel that is done.
+  if [ "$started_tunnel" = true ]; then
+    trap 'tunnel_down' EXIT
+  fi
   driver_up
+  trap - EXIT
   local kc host
   kc="$(driver_kubeconfig)"
   host="$(driver_endpoint)"

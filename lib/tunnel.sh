@@ -124,13 +124,12 @@ tunnel_up() {
   pidfile="/tmp/muster-tunnel-${INSTANCE}.pid"
   : >"$log"
 
-  # macOS lacks setsid and its networking stack often drops QUIC (UDP) tunnels,
-  # causing Error 1033. Force http2 (TCP) on Darwin and use 127.0.0.1 to avoid
-  # IPv6 resolution of localhost.
-  local cf_args=(tunnel --url "https://127.0.0.1:${port}" --no-tls-verify)
-  if [ "$(uname -s)" = "Darwin" ]; then
-    cf_args+=(--protocol http2)
-  fi
+  # cloudflared defaults to QUIC (UDP 7844). Many CI runners, container and
+  # corporate networks, and host firewalls drop or stall that traffic, not just
+  # macOS, and the symptom is Error 1033 or a tunnel that works intermittently.
+  # Force http2 (TCP) everywhere, and use 127.0.0.1 to avoid IPv6 resolution of
+  # localhost.
+  local cf_args=(tunnel --url "https://127.0.0.1:${port}" --no-tls-verify --protocol http2)
 
   if command -v setsid >/dev/null 2>&1; then
     setsid "$cf" "${cf_args[@]}" >>"$log" 2>&1 </dev/null &
@@ -140,15 +139,26 @@ tunnel_up() {
   fi
   echo "$!" >"$pidfile"
 
-  local i
-  for ((i = 1; i <= 30; i++)); do
+  # Require the registration line as well as the URL. cloudflared prints the
+  # assigned hostname before it has completed the edge handshake, and returning
+  # on the URL alone means Rancher is installed and the dashboard gate runs
+  # while the tunnel is still unregistered, so the gate races a tunnel that
+  # comes up a second later. Edge registration is slower than hostname
+  # allocation, hence 60s rather than 30s.
+  local i url="" registered=0 timeout="${MUSTER_TUNNEL_TIMEOUT:-60}"
+  for ((i = 1; i <= timeout; i++)); do
     url="$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$log" | head -1 || true)"
-    [ -n "$url" ] && break
+    if [ -n "$url" ] && grep -q 'Registered tunnel connection' "$log"; then
+      registered=1
+      break
+    fi
     sleep 1
   done
-  if [ -z "$url" ]; then
-    log_err "cloudflared did not report a tunnel url (see $log)"
-    return 1
+  if [ -z "$url" ] || [ "$registered" -ne 1 ]; then
+    # Keep the log: the error message points at it, and it is the only record of
+    # why the edge handshake did not complete.
+    tunnel_down --keep-log
+    die "cloudflared tunnel did not register within ${timeout}s (see $log)"
   fi
   echo "$url"
 }
@@ -161,8 +171,14 @@ tunnel_url() {
   fi
 }
 
-# tunnel_down - stop the tunnel recorded for this instance.
+# tunnel_down [--keep-log] - stop the tunnel recorded for this instance.
+#
+# The log goes with the pidfile, unless --keep-log is given: a caller that is
+# about to point the user at the log for a failed run must not delete it first.
 tunnel_down() {
+  local keep_log=false
+  [ "${1:-}" = "--keep-log" ] && keep_log=true
+
   local port
   if declare -F driver_tunnel_port >/dev/null; then
     port="$(driver_tunnel_port)"
@@ -173,9 +189,13 @@ tunnel_down() {
   local pidfile="/tmp/muster-tunnel-${INSTANCE}.pid" p
   if [ -f "$pidfile" ]; then
     kill "$(cat "$pidfile")" 2>/dev/null || true
-    rm -f "$pidfile" "/tmp/muster-tunnel-${INSTANCE}.log"
+    rm -f "$pidfile"
+    [ "$keep_log" = true ] || rm -f "/tmp/muster-tunnel-${INSTANCE}.log"
   fi
-  for p in $(pgrep -f "cloudflared.*localhost:${port}" 2>/dev/null || true); do
+  # Match both spellings of the loopback the tunnel may have been started with: a
+  # pidfile that was lost, or a run that died before writing one, otherwise leaves
+  # cloudflared holding the port and the next run reuses a stale tunnel URL.
+  for p in $(pgrep -f "cloudflared.*(127\.0\.0\.1|localhost):${port}" 2>/dev/null || true); do
     kill "$p" 2>/dev/null || true
   done
 }

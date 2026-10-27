@@ -42,6 +42,9 @@ plan_report() {
   plan_row provider "$PROVIDER"
   plan_row instance "$INSTANCE"
   plan_row external "$EXTERNAL"
+  if [ "${RANCHER_REPLICAS:-1}" -gt 1 ] || [ "${K3D_SERVERS:-1}" -gt 1 ]; then
+    plan_row topology "replicas ${RANCHER_REPLICAS:-1}  (servers: ${K3D_SERVERS:-1})"
+  fi
   case "${CHANNEL_SOURCE:-fixed}" in
     fixed) ;;
     metadata) plan_row "channel source" "metadata  (branches-metadata.json decides registry and image)" ;;

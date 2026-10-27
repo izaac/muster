@@ -110,7 +110,7 @@ driver_up() {
 
   local create_args=(
     cluster create "$INSTANCE"
-    --servers 1 --agents 0
+    --servers "${K3D_SERVERS:-1}" --agents 0
     --image "${K3S_IMAGE:-rancher/k3s:v1.33.1-k3s1}"
     --network "$(k3d_network)"
     -p "$(k3d_https_port):443@loadbalancer"
@@ -166,7 +166,7 @@ driver_up() {
   fi
   if [ -n "${DASHBOARD_DIST:-}" ]; then
     [ -d "$DASHBOARD_DIST" ] || die "--dashboard-dist '$DASHBOARD_DIST' is not a directory"
-    create_args+=(-v "${DASHBOARD_DIST}:/dashboard-dist@server:0")
+    create_args+=(-v "${DASHBOARD_DIST}:/dashboard-dist@server:*")
   fi
 
   log_info "k3d: creating cluster $INSTANCE"
@@ -240,13 +240,21 @@ driver_reseal() {
 
 driver_settle() {
   local threshold=50 settle_samples=3 sample_interval=10 max_attempts=30
-  local low_streak=0 cpu i node="k3d-${INSTANCE}-server-0"
+  local low_streak=0 cpu i node nodes first
   local ncpu
-  ncpu=$(container_cli exec "$node" nproc 2>/dev/null || nproc 2>/dev/null || echo 1)
+  # A multi-server cluster shares one host, so the busiest server decides whether
+  # the substrate has settled. Fall back to server-0 when the runtime cannot list
+  # names (a stubbed driver, or an unusual container CLI).
+  nodes="$(container_cli ps --format '{{.Names}}' 2>/dev/null \
+    | grep -E "^k3d-${INSTANCE}-server-[0-9]+$" | sort || true)"
+  [ -n "$nodes" ] || nodes="k3d-${INSTANCE}-server-0"
+  first="$(printf '%s\n' "$nodes" | head -1)"
+  ncpu=$(container_cli exec "$first" nproc 2>/dev/null || nproc 2>/dev/null || echo 1)
   [ "${ncpu:-0}" -ge 1 ] 2>/dev/null || ncpu=1
   for ((i = 1; i <= max_attempts; i++)); do
-    cpu=$(container_cli stats --no-stream --format '{{.CPUPerc}}' "$node" 2>/dev/null \
-      | tr -d '%' | cut -d. -f1)
+    cpu="$(printf '%s\n' "$nodes" | while IFS= read -r node; do
+      container_cli stats --no-stream --format '{{.CPUPerc}}' "$node" 2>/dev/null
+    done | tr -d '%' | cut -d. -f1 | sort -n | tail -1)"
     cpu=${cpu:-0}
     cpu=$((cpu / ncpu))
     if [ "$cpu" -lt "$threshold" ]; then

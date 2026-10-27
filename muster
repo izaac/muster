@@ -131,6 +131,13 @@ Flags:
                                     that ships no chart of its own, such as a
                                     branch head. The tag must exist in the
                                     channel's registry.
+  --replicas <N>                    Rancher server replicas (default: 1). The
+                                    chart's antiAffinity is "preferred", so N>1
+                                    schedules on a single node; use --servers
+                                    for a real HA control plane.
+  --servers <N>                     k3d server (control-plane) nodes (default:
+                                    1; k3d provider only). Pair with --replicas
+                                    for HA.
   --out <env|cypress|json>          Handoff format (default: env).
   --dashboard-src <path>            rancher/dashboard checkout to build (build-ui).
   --dashboard-branch <name>         Force the UI branch (build-ui); default derives
@@ -187,6 +194,8 @@ IMPORT_INSTANCE="${IMPORT_INSTANCE:-}"
 MANAGEMENT_INSTANCE="${MANAGEMENT_INSTANCE:-}"
 RANCHER_PASSWORD="${RANCHER_PASSWORD:-password1234}"
 RANCHER_IMAGE_TAG_OVERRIDE="${RANCHER_IMAGE_TAG_OVERRIDE:-}"
+RANCHER_REPLICAS="${RANCHER_REPLICAS:-1}"
+K3D_SERVERS="${K3D_SERVERS:-1}"
 OUT="${OUT:-env}"
 DASHBOARD_SRC="${DASHBOARD_SRC:-}"
 DASHBOARD_DIST="${DASHBOARD_DIST:-}"
@@ -300,6 +309,14 @@ while [ $# -gt 0 ]; do
       RANCHER_IMAGE_TAG_OVERRIDE="${2:?--image-tag needs a value}"
       shift 2
       ;;
+    --replicas)
+      RANCHER_REPLICAS="${2:?--replicas needs a value}"
+      shift 2
+      ;;
+    --servers)
+      K3D_SERVERS="${2:?--servers needs a value}"
+      shift 2
+      ;;
     --out)
       OUT="${2:?--out needs a value}"
       shift 2
@@ -366,9 +383,15 @@ case "$MUSTER_UI_OFFLINE" in
   '' | true | false | dynamic | auto) ;;
   *) die "unknown --ui-offline: $MUSTER_UI_OFFLINE (true|false|dynamic|auto)" ;;
 esac
+# A glob would accept trailing junk once the prefix matches ("10x"), so anchor a
+# regex: both values size a loop or a replica count, where that is wrong.
+[[ "$RANCHER_REPLICAS" =~ ^[1-9][0-9]*$ ]] \
+  || die "--replicas must be a positive integer (got '$RANCHER_REPLICAS')"
+[[ "$K3D_SERVERS" =~ ^[1-9][0-9]*$ ]] \
+  || die "--servers must be a positive integer (got '$K3D_SERVERS')"
 
 export INSTANCE EXTERNAL RANCHER_REPO RANCHER_IMAGE_TAG OUT RANCHER_PASSWORD
-export RANCHER_IMAGE_TAG_OVERRIDE CHANNEL_SOURCE
+export RANCHER_IMAGE_TAG_OVERRIDE CHANNEL_SOURCE RANCHER_REPLICAS K3D_SERVERS
 export PREFER_STAGING DRY_RUN
 export MIRROR_REGISTRY MIRROR_ALL MIRROR_EXTENSION MIRROR_INSECURE MIRROR_K3K_TAG AIRGAP
 export MIRROR_FROM_CLUSTER MIRROR_K3S_VERSIONS
@@ -529,6 +552,8 @@ external=$EXTERNAL
 repo=$RANCHER_REPO$repo_note
 channel_source=$CHANNEL_SOURCE
 version=$RANCHER_IMAGE_TAG
+replicas=$RANCHER_REPLICAS
+servers=$K3D_SERVERS
 out=$OUT
 dashboard_src=${DASHBOARD_SRC:-<none>}
 dashboard_branch=${DASHBOARD_BRANCH:-<derived>}

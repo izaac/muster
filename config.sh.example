@@ -51,6 +51,15 @@ CERT_MANAGER_VERSION="v1.16.2"
 # was written against. Set MUSTER_IGNORE_BRANCH_METADATA=1 to opt out.
 K3S_IMAGE="rancher/k3s:v1.33.1-k3s1"
 
+# --- topology (optional) -----------------------------------------------------
+# RANCHER_REPLICAS: Rancher server pods (--replicas). The chart's antiAffinity
+# is "preferred", so N>1 schedules even on a single node; pair it with
+# K3D_SERVERS when the control plane is meant to survive a node.
+RANCHER_REPLICAS="1"
+
+# K3D_SERVERS: k3d server (control-plane) nodes (--servers; k3d provider only).
+K3D_SERVERS="1"
+
 # --- external access (optional) ----------------------------------------------
 # EXTERNAL=true exposes Rancher through a cloudflared quick tunnel so an
 # out-of-cluster node can register (provisioning tests). --external overrides.

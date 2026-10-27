@@ -1834,7 +1834,7 @@ helm_install_rancher() {
     --devel --version "$RANCHER_CHART_VERSION"
     --namespace cattle-system --create-namespace
     --set "hostname=${host}"
-    --set "replicas=1"
+    --set "replicas=${RANCHER_REPLICAS:-1}"
     --set "rancherImage=${image}"
     --set "rancherImagePullPolicy=Always"
     --set "bootstrapPassword=${RANCHER_PASSWORD:-password1234}"

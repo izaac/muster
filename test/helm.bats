@@ -1762,3 +1762,35 @@ _ga_stub() {
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
+
+# --- server replicas ---------------------------------------------------------
+
+@test "the install passes the requested replica count" {
+  helm() { printf '%s\n' "$*"; }
+  kubectl() { :; }
+  helm_install_cert_manager() { :; }
+  require_cmd() { :; }
+  RANCHER_REPO=rancher-com-rc
+  RANCHER_CHART_VERSION=2.13.3
+  RANCHER_IMAGE=rancher/rancher
+  RANCHER_IMAGE_TAG_RESOLVED=v2.13.3
+  RANCHER_REPLICAS=3
+  run helm_install_rancher /tmp/kc rancher.example.com
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"replicas=3"* ]]
+}
+
+@test "the install defaults to a single replica" {
+  helm() { printf '%s\n' "$*"; }
+  kubectl() { :; }
+  helm_install_cert_manager() { :; }
+  require_cmd() { :; }
+  RANCHER_REPO=rancher-com-rc
+  RANCHER_CHART_VERSION=2.13.3
+  RANCHER_IMAGE=rancher/rancher
+  RANCHER_IMAGE_TAG_RESOLVED=v2.13.3
+  unset RANCHER_REPLICAS
+  run helm_install_rancher /tmp/kc rancher.example.com
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"replicas=1"* ]]
+}

@@ -192,3 +192,41 @@ EOF
   [ "$status" -eq 0 ]
   [ "$(field ui_offline "$output")" = "auto" ]
 }
+
+# --- HA topology flags -------------------------------------------------------
+
+@test "--replicas and --servers default to 1" {
+  run "$MUSTER" show
+  [ "$status" -eq 0 ]
+  [ "$(field replicas "$output")" = "1" ]
+  [ "$(field servers "$output")" = "1" ]
+}
+
+@test "--replicas and --servers are parsed and shown" {
+  run "$MUSTER" show --replicas 3 --servers 3
+  [ "$status" -eq 0 ]
+  [ "$(field replicas "$output")" = "3" ]
+  [ "$(field servers "$output")" = "3" ]
+}
+
+@test "a non-positive replica count is rejected" {
+  for n in 0 -1 abc 1.5 10x; do
+    run "$MUSTER" show --replicas "$n"
+    [ "$status" -ne 0 ] || {
+      echo "accepted replicas=$n"
+      false
+    }
+    [[ "$output" == *"--replicas must be a positive integer (got '$n')"* ]]
+  done
+}
+
+@test "a non-positive server count is rejected" {
+  for n in 0 -1 abc 1.5 10x; do
+    run "$MUSTER" show --servers "$n"
+    [ "$status" -ne 0 ] || {
+      echo "accepted servers=$n"
+      false
+    }
+    [[ "$output" == *"--servers must be a positive integer (got '$n')"* ]]
+  done
+}
